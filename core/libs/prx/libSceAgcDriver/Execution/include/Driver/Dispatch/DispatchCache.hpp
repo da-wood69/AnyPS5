@@ -2,6 +2,7 @@
 #define CORE_LIBS_PRX_LIBSCEAGCDRIVER_EXECUTION_INCLUDE_DRIVER_DISPATCHCACHE_HPP
 
 #include "prx/libSceAgcDriver/Execution/include/Driver/Shaders/ShaderRegistry.hpp"
+#include "prx/libSceAgcDriver/Execution/include/AtomicSharedPtr.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Recipe.hpp"
 #include <algorithm>
 #include <array>
@@ -31,7 +32,7 @@ struct DispatchVariant {
 
     std::shared_ptr<const ShaderSnapshot> shader;
 
-    std::atomic<std::shared_ptr<const Recipe>> recipe;
+    AtomicSharedPtr<const Recipe> recipe;
 
     static constexpr std::uint32_t NoFlatBinding = std::numeric_limits<std::uint32_t>::max();
     std::vector<std::uint32_t> dataPositions;

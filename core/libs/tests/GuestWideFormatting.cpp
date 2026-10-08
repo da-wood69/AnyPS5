@@ -11,15 +11,15 @@ extern "C" int APS5_VABI snwprintf_s_nid_postfix(char16_t*, std::size_t, const c
 
 static int APS5_VABI Format(char16_t* buffer, std::size_t size, const char16_t* format, ...) {
 #ifdef _WIN32
-    __builtin_sysv_va_list args;
-    __builtin_sysv_va_start(args, format);
+    APS5_VA_LIST args;
+    APS5_VA_START(args, format);
 #else
     std::va_list args;
     va_start(args, format);
 #endif
     const int result = vswprintf_nid_postfix(buffer, size, format, reinterpret_cast<VaList*>(args));
 #ifdef _WIN32
-    __builtin_sysv_va_end(args);
+    APS5_VA_END(args);
 #else
     va_end(args);
 #endif

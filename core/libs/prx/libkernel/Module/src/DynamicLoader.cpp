@@ -15,6 +15,9 @@
 #include <windows.h>
 #else
 #include <dlfcn.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 #endif
 
 namespace {
@@ -26,6 +29,9 @@ void Error(const char* message) {
 }
 struct Module {
     void* native = nullptr;
+#ifdef __APPLE__
+    const void* image = nullptr;
+#endif
     bool owned = true;
     bool global = false;
     ~Module() {
@@ -42,6 +48,21 @@ std::mutex modulesMutex;
 std::map<std::uintptr_t, std::shared_ptr<Module>> modules;
 std::uintptr_t nextHandle = 0x20000000;
 std::map<const void*, std::uintptr_t> imageIds;
+#ifdef __APPLE__
+const void* ImageForPath(const std::filesystem::path& path) {
+    std::error_code error;
+    const auto target = std::filesystem::weakly_canonical(path, error);
+    if (error) throw std::runtime_error("dlopen: cannot resolve loaded image path");
+    for (std::uint32_t index = 0; index < _dyld_image_count(); ++index) {
+        const char* name = _dyld_get_image_name(index);
+        if (name == nullptr) continue;
+        const auto candidate = std::filesystem::weakly_canonical(name, error);
+        if (!error && candidate == target) return _dyld_get_image_header(index);
+        error.clear();
+    }
+    throw std::runtime_error("dlopen: loaded image is absent from dyld");
+}
+#endif
 void* Symbol(Module& module, const char* name) {
 #ifdef _WIN32
     return reinterpret_cast<void*>(GetProcAddress(static_cast<HMODULE>(module.native), name));
@@ -103,6 +124,9 @@ void* APS5_VABI dlopen_nid_postfix(const char* path, int flags) {
             ((flags & 0x100) ? RTLD_GLOBAL : RTLD_LOCAL);
         module->native = ::dlopen(path ? resolved.c_str() : nullptr, nativeFlags);
         if (!module->native) { Error(::dlerror()); return nullptr; }
+#ifdef __APPLE__
+        module->image = path ? ImageForPath(resolved) : _dyld_get_image_header(0);
+#endif
 #endif
         std::lock_guard lock(modulesMutex);
         const auto handle = nextHandle++;
@@ -145,7 +169,11 @@ int APS5_VABI dlclose_nid_postfix(void* handle) {
 std::int32_t ModuleIdForImage_nid_no_patch(const void* native) {
     std::lock_guard lock(modulesMutex);
     for (const auto& [handle, module] : modules) {
+#ifdef __APPLE__
+        if (module->image == native) return static_cast<std::int32_t>(handle);
+#else
         if (module->native == native) return static_cast<std::int32_t>(handle);
+#endif
     }
     const auto [found, inserted] = imageIds.emplace(native, nextHandle);
     if (inserted) ++nextHandle;

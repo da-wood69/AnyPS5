@@ -18,6 +18,10 @@
 #include <sstream>
 #include <sys/mman.h>
 #include <sys/resource.h>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#endif
 #endif
 #include <algorithm>
 #include <limits>
@@ -279,6 +283,21 @@ int APS5_VABI sceKernelVirtualQuery(const void* addr, int flags, VirtualQueryInf
  info->end = info->start + host.RegionSize;
  const bool writable = (host.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_WRITECOPY)) != 0;
  const bool executable = (host.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+ #elif defined(__APPLE__)
+ mach_vm_address_t regionAddress = address;
+ mach_vm_size_t regionSize = 0;
+ vm_region_basic_info_data_64_t host{};
+ mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+ mach_port_t object = MACH_PORT_NULL;
+ const auto query = mach_vm_region(mach_task_self(), &regionAddress, &regionSize, VM_REGION_BASIC_INFO_64,
+     reinterpret_cast<vm_region_info_t>(&host), &count, &object);
+ if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
+ if (query != KERN_SUCCESS || address < regionAddress || address - regionAddress >= regionSize || !(host.protection & VM_PROT_READ))
+  return SCE_KERNEL_ERROR_EACCES;
+ info->start = regionAddress;
+ info->end = regionAddress + regionSize;
+ const bool writable = (host.protection & VM_PROT_WRITE) != 0;
+ const bool executable = (host.protection & VM_PROT_EXECUTE) != 0;
  #else
  std::ifstream maps("/proc/self/maps");
  std::string line;
@@ -509,6 +528,13 @@ int APS5_VABI sceKernelMlock_nid_postfix(void* address, std::uint64_t length) {
     const auto start = first & ~pageMask;
     const auto end = (first + length + pageMask) & ~pageMask;
     if (start == end) return 0;
+    for (auto cursor = start; cursor < end;) {
+        VirtualQueryInfo info{};
+        if (sceKernelVirtualQuery(reinterpret_cast<void*>(cursor), 0, &info, sizeof(info)) != 0 ||
+            (info.protection & 1) == 0 || info.end <= cursor)
+            return SCE_KERNEL_ERROR_ENOMEM;
+        cursor = std::min<std::uintptr_t>(end, info.end);
+    }
     return LockHostPages(start, end);
 }
 

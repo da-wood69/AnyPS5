@@ -29,6 +29,9 @@
 #include <fstream>
 #include <pthread.h>
 #include <sstream>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#endif
 #endif
 
 namespace AgcDriver::GuestMemory {
@@ -366,7 +369,7 @@ struct PageSpan {
     }
 
     std::uint8_t load(std::uintptr_t address) const {
-        return std::atomic_ref<const std::uint8_t>(pages[(address - base) / PageBytes]).load(std::memory_order_relaxed);
+        return std::atomic_ref<std::uint8_t>(pages[(address - base) / PageBytes]).load(std::memory_order_relaxed);
     }
 
     void store(std::uintptr_t address, std::uint8_t value) {
@@ -379,11 +382,11 @@ struct PageSpan {
         const auto stop = std::min<std::uintptr_t>((std::min(limit, base + size) - base + PageBytes - 1) / PageBytes, size / PageBytes);
         const std::uint64_t wide = 0x0101010101010101ull * value;
         while (index < stop) {
-            if (index % 8 == 0 && index + 8 <= stop && std::atomic_ref<const std::uint64_t>(*reinterpret_cast<const std::uint64_t*>(pages + index)).load(std::memory_order_relaxed) == wide) {
+            if (index % 8 == 0 && index + 8 <= stop && std::atomic_ref<std::uint64_t>(*reinterpret_cast<std::uint64_t*>(pages + index)).load(std::memory_order_relaxed) == wide) {
                 index += 8;
                 continue;
             }
-            if (std::atomic_ref<const std::uint8_t>(pages[index]).load(std::memory_order_relaxed) != value) break;
+            if (std::atomic_ref<std::uint8_t>(pages[index]).load(std::memory_order_relaxed) != value) break;
             ++index;
         }
         return std::min(limit, base + index * PageBytes);
@@ -534,6 +537,32 @@ bool describePages(std::uintptr_t address, std::size_t bytes, Emit&& emit) {
         const auto next = std::min(end, regionEnd);
         if (!emit(PageRun{cursor, next, readable, writable})) return true;
         cursor = next;
+#elif defined(__APPLE__)
+        const TimedAccess timed(CounterQuery, 0);
+        vm_address_t region = cursor;
+        vm_size_t regionSize = 0;
+        vm_region_basic_info_data_64_t info{};
+        mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+        mach_port_t object = MACH_PORT_NULL;
+        const auto result = vm_region_64(mach_task_self(), &region, &regionSize, VM_REGION_BASIC_INFO_64, reinterpret_cast<vm_region_info_t>(&info), &count, &object);
+        if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
+        if (result == KERN_INVALID_ADDRESS) {
+            static_cast<void>(emit(PageRun{cursor, end, false, false}));
+            return true;
+        }
+        if (result != KERN_SUCCESS || regionSize == 0 || region > std::numeric_limits<std::uintptr_t>::max() - regionSize) return false;
+        if (region > cursor) {
+            const auto gapEnd = std::min(end, static_cast<std::uintptr_t>(region));
+            if (!emit(PageRun{cursor, gapEnd, false, false})) return true;
+            cursor = gapEnd;
+            continue;
+        }
+        const auto regionEnd = static_cast<std::uintptr_t>(region + regionSize);
+        const auto next = std::min(end, regionEnd);
+        const bool readable = (info.protection & VM_PROT_READ) != 0;
+        const bool writable = readable && (info.protection & VM_PROT_WRITE) != 0;
+        if (!emit(PageRun{cursor, next, readable, writable})) return true;
+        cursor = next;
 #else
         std::ifstream maps("/proc/self/maps");
         if (!maps.is_open()) return false;
@@ -580,6 +609,13 @@ bool onOwnLiveStack(std::uintptr_t address, std::size_t bytes) {
             GetCurrentThreadStackLimits(&lowLimit, &highLimit);
             low = static_cast<std::uintptr_t>(lowLimit);
             high = static_cast<std::uintptr_t>(highLimit);
+#elif defined(__APPLE__)
+            const auto thread = pthread_self();
+            const auto stackHigh = reinterpret_cast<std::uintptr_t>(pthread_get_stackaddr_np(thread));
+            const auto stackSize = pthread_get_stacksize_np(thread);
+            if (stackHigh == 0 || stackSize == 0 || stackSize > stackHigh) return;
+            low = stackHigh - stackSize;
+            high = stackHigh;
 #else
             pthread_attr_t attributes;
             if (pthread_getattr_np(pthread_self(), &attributes) != 0) return;

@@ -9,6 +9,7 @@ add_executable(nid_patcher
         ${CMAKE_CURRENT_SOURCE_DIR}/nid/src/NidResolver.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/nid/src/ExportExclusions.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/nid/src/ElfNidPatcher.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/nid/src/MachONidPatcher.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/nid/src/PeNidPatcher.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/nid/src/BinaryPatcherFactory.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/nid/src/main.cpp

@@ -5,6 +5,8 @@
 // return address, rbx, rsp, rbp, r12-r15, MXCSR and the x87 control word.
 #ifdef _WIN32
 #define APS5_ASM_FUNCTION(name) ".globl " name "\n.def " name "; .scl 2; .type 32; .endef\n" name ":\n"
+#elif defined(__APPLE__)
+#define APS5_ASM_FUNCTION(name) ".globl _" name "\n_" name ":\n"
 #else
 #define APS5_ASM_FUNCTION(name) ".globl " name "\n.type " name ", @function\n" name ":\n"
 #endif

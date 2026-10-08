@@ -1,5 +1,9 @@
 #include "prx/libc/include/exceptions/Runtime.hpp"
 
+#ifdef __APPLE__
+#include <dlfcn.h>
+#endif
+
 extern "C" _Unwind_Reason_Code APS5_VABI __gxx_personality_v0_nid_postfix(
     int version, _Unwind_Action actions, std::uint64_t exceptionClass,
     _Unwind_Exception* exception, _Unwind_Context* context
@@ -75,13 +79,30 @@ extern "C" _Unwind_Reason_Code __gxx_personality_v0(
     int version, _Unwind_Action actions, std::uint64_t exceptionClass,
     _Unwind_Exception* exception, _Unwind_Context* context
 ) {
+#ifdef __APPLE__
+    using Personality = _Unwind_Reason_Code (*)(
+        int, _Unwind_Action, std::uint64_t, _Unwind_Exception*, _Unwind_Context*
+    );
+    static const auto nativePersonality = reinterpret_cast<Personality>(dlsym(RTLD_NEXT, "__gxx_personality_v0"));
+    if (!nativePersonality) std::abort();
+    return nativePersonality(version, actions, exceptionClass, exception, context);
+#else
     return __gxx_personality_v0_nid_postfix(version, actions, exceptionClass, exception, context);
+#endif
 }
 
 extern "C" _Unwind_Reason_Code __gcc_personality_v0(
-    int version, _Unwind_Action actions, std::uint64_t,
+    int version, _Unwind_Action actions, std::uint64_t exceptionClass,
     _Unwind_Exception* exception, _Unwind_Context* context
 ) {
+#ifdef __APPLE__
+    using Personality = _Unwind_Reason_Code (*)(
+        int, _Unwind_Action, std::uint64_t, _Unwind_Exception*, _Unwind_Context*
+    );
+    static const auto nativePersonality = reinterpret_cast<Personality>(dlsym(RTLD_NEXT, "__gcc_personality_v0"));
+    if (!nativePersonality) std::abort();
+    return nativePersonality(version, actions, exceptionClass, exception, context);
+#else
     using namespace LibcUnwind;
     if (version != 1) return _URC_FATAL_PHASE1_ERROR;
     if (!(actions & _UA_CLEANUP_PHASE) || !context->lsda) return _URC_CONTINUE_UNWIND;
@@ -106,4 +127,5 @@ extern "C" _Unwind_Reason_Code __gcc_personality_v0(
         return _URC_INSTALL_CONTEXT;
     }
     return _URC_CONTINUE_UNWIND;
+#endif
 }

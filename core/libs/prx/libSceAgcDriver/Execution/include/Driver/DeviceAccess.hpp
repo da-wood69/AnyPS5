@@ -1,6 +1,7 @@
 #ifndef CORE_LIBS_PRX_LIBSCEAGCDRIVER_EXECUTION_INCLUDE_DRIVER_DEVICEACCESS_HPP
 #define CORE_LIBS_PRX_LIBSCEAGCDRIVER_EXECUTION_INCLUDE_DRIVER_DEVICEACCESS_HPP
 
+#include "prx/libSceAgcDriver/Execution/include/AtomicSharedPtr.hpp"
 #include "prx/libSceAgcDriver/Execution/include/VulkanDevice.hpp"
 #include <atomic>
 #include <condition_variable>
@@ -21,7 +22,7 @@ public:
     bool operator==(std::nullptr_t) const;
 
 private:
-    std::atomic<std::shared_ptr<VulkanDevice>> pointer;
+    AtomicSharedPtr<VulkanDevice> pointer;
 };
 
 class DeviceUseGate {

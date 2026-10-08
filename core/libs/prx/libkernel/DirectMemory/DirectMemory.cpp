@@ -17,14 +17,19 @@
 #include <system_error>
 #include <vector>
 
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#if defined(__linux__)
 #include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
+#else
+#include <mach/mach.h>
+#include <sys/stat.h>
+#endif
 #else
 #include <windows.h>
 
@@ -167,6 +172,26 @@ void* MapAtOrAbove(std::uintptr_t start, size_t len, int prot, size_t alignment)
     }
     throw std::runtime_error("Hinted mmap kept racing with other mappings");
 }
+#elif defined(__APPLE__)
+void* MapAtOrAbove(std::uintptr_t start, size_t len, int prot, size_t alignment) {
+    if (start > std::numeric_limits<std::uintptr_t>::max() - alignment) throw std::overflow_error("Mapping address hint overflow");
+    const auto hint = (start + alignment - 1) & ~(static_cast<std::uintptr_t>(alignment) - 1);
+    if (len > std::numeric_limits<std::size_t>::max() - alignment) throw std::overflow_error("Aligned mapping size overflow");
+    const auto allocationBytes = len + alignment;
+    void* allocation = mmap(reinterpret_cast<void*>(hint), allocationBytes, prot, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (allocation == MAP_FAILED) throw std::system_error(errno, std::generic_category(), "Hinted mmap failed");
+    const auto raw = reinterpret_cast<std::uintptr_t>(allocation);
+    const auto aligned = (std::max(raw, hint) + alignment - 1) & ~(static_cast<std::uintptr_t>(alignment) - 1);
+    if (aligned < raw || aligned - raw > allocationBytes || len > allocationBytes - (aligned - raw)) {
+        munmap(allocation, allocationBytes);
+        throw std::runtime_error("No free range above the mapping address hint");
+    }
+    const auto prefix = static_cast<std::size_t>(aligned - raw);
+    const auto suffix = allocationBytes - prefix - len;
+    if (prefix != 0) munmap(allocation, prefix);
+    if (suffix != 0) munmap(reinterpret_cast<void*>(aligned + len), suffix);
+    return reinterpret_cast<void*>(aligned);
+}
 #endif
 
 void ValidateLength(size_t len) {
@@ -234,18 +259,28 @@ public:
             throw std::system_error(error, std::system_category(), message);
         }
 #else
+#ifdef __APPLE__
+        static std::atomic<std::uint64_t> sequence{0};
+        char name[64];
+        std::snprintf(name, sizeof(name), "/anyps5-%d-%llu", static_cast<int>(getpid()), static_cast<unsigned long long>(sequence.fetch_add(1, std::memory_order_relaxed)));
+        file = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
+        if (file >= 0) shm_unlink(name);
+#else
         file = memfd_create("direct memory", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+#endif
         if (file < 0) throw std::system_error(errno, std::generic_category(), "create direct memory backing");
         if (ftruncate(file, static_cast<off_t>(bytes)) != 0) {
             const int error = errno;
             ::close(file);
             throw std::system_error(error, std::generic_category(), "size direct memory backing");
         }
+#ifndef __APPLE__
         if (fcntl(file, F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_GROW) != 0) {
             const int error = errno;
             ::close(file);
             throw std::system_error(error, std::generic_category(), "seal direct memory backing");
         }
+#endif
 #endif
     }
 
@@ -436,7 +471,7 @@ bool RemapFixedIntoRegistered(GuestAllocations::Mutation& mutation, void* addr, 
 }
 
 void Unmap(void* addr, size_t len) {
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
     if (munmap(addr, len) != 0) throw std::system_error(errno, std::generic_category(), "munmap failed");
     GuestWriteWatch::GuestWriteWatchUnregister_nid_postfix(addr, len);
 #else
@@ -487,6 +522,23 @@ void* MapPlaced(void* addr, size_t len, int prot, int flags, size_t alignment) {
 #endif
 #if defined(__linux__)
         const int placement = (flags & GuestMapNoOverwrite) != 0 ? MAP_FIXED_NOREPLACE : MAP_FIXED;
+#elif defined(__APPLE__)
+        if ((flags & GuestMapNoOverwrite) != 0) {
+            vm_address_t reserved = reinterpret_cast<vm_address_t>(addr);
+            const auto result = vm_allocate(mach_task_self(), &reserved, len, VM_FLAGS_FIXED);
+            if (result != KERN_SUCCESS) {
+                errno = EEXIST;
+                return MAP_FAILED;
+            }
+            if (mprotect(addr, len, prot) != 0) {
+                const int error = errno;
+                vm_deallocate(mach_task_self(), reserved, len);
+                errno = error;
+                return MAP_FAILED;
+            }
+            return addr;
+        }
+        const int placement = MAP_FIXED;
 #else
         const int placement = MAP_FIXED;
 #endif
@@ -498,7 +550,7 @@ void* MapPlaced(void* addr, size_t len, int prot, int flags, size_t alignment) {
         return result;
     }
     if (addr) {
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
         return MapAtOrAbove(reinterpret_cast<std::uintptr_t>(addr), len, prot, alignment);
 #else
         return mmap_aligned(len, prot, alignment, reinterpret_cast<std::uintptr_t>(addr));
@@ -742,7 +794,7 @@ int DoMunmap(void* addr, size_t len) {
         auto* pieceAddress = const_cast<void*>(piece);
         std::lock_guard lock(g_directLock);
         EraseMappings(reinterpret_cast<std::uintptr_t>(piece), reinterpret_cast<std::uintptr_t>(piece) + pieceBytes);
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
         Unmap(pieceAddress, pieceBytes);
 #else
         if (KernelArena::Get().Contains(pieceAddress, pieceBytes)) munmap(pieceAddress, pieceBytes);

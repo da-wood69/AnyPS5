@@ -14,6 +14,11 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
+#include <mach-o/loader.h>
+#include <mach/vm_prot.h>
+#include <unistd.h>
 #else
 #include <link.h>
 #include <unistd.h>
@@ -126,6 +131,58 @@ void GuestAllocationsRegisterMainImage_nid_postfix(void*) {
         cursor += memory.RegionSize;
     }
     require(registered, "main guest image has no committed pages");
+    state.ranges.swap(replacement);
+    state.mainImageRegistered = true;
+}
+#elif defined(__APPLE__)
+void GuestAllocationsRegisterMainImage_nid_postfix(void*) {
+    auto& state = registry();
+    if (state.mainImageRegistered) return;
+    struct Page {
+        bool readable = false;
+        bool writable = false;
+    };
+    std::map<std::uint64_t, Page> pages;
+    const auto pageSize = static_cast<std::uint64_t>(::sysconf(_SC_PAGESIZE));
+    const auto* image = reinterpret_cast<const mach_header_64*>(_dyld_get_image_header(0));
+    require(image != nullptr && image->magic == MH_MAGIC_64, "cannot locate the main guest image");
+    const auto slide = _dyld_get_image_vmaddr_slide(0);
+    auto* command = reinterpret_cast<const load_command*>(reinterpret_cast<const std::uint8_t*>(image) + sizeof(*image));
+    for (std::uint32_t index = 0; index < image->ncmds; ++index) {
+        require(command->cmdsize >= sizeof(*command), "invalid main guest image load command");
+        if (command->cmd == LC_SEGMENT_64) {
+            require(command->cmdsize >= sizeof(segment_command_64), "invalid main guest image segment");
+            const auto* segment = reinterpret_cast<const segment_command_64*>(command);
+            if (segment->vmsize != 0 && segment->initprot != VM_PROT_NONE) {
+                const auto address = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(segment->vmaddr) + slide);
+                require(segment->vmsize <= std::numeric_limits<std::uintptr_t>::max() - address, "invalid main guest image range");
+                const auto start = address & ~(pageSize - 1);
+                const auto end = (address + segment->vmsize + pageSize - 1) & ~(pageSize - 1);
+                for (auto page = start; page < end; page += pageSize) {
+                    auto& entry = pages[page];
+                    entry.readable = entry.readable || (segment->initprot & (VM_PROT_READ | VM_PROT_WRITE)) != 0;
+                    entry.writable = entry.writable || (segment->initprot & VM_PROT_WRITE) != 0;
+                }
+            }
+        }
+        command = reinterpret_cast<const load_command*>(reinterpret_cast<const std::uint8_t*>(command) + command->cmdsize);
+    }
+    require(!pages.empty(), "main guest image has no loadable segments");
+    auto replacement = state.ranges;
+    for (auto page = pages.begin(); page != pages.end();) {
+        auto last = page;
+        while (std::next(last) != pages.end() && std::next(last)->first == last->first + pageSize && std::next(last)->second.readable == page->second.readable && std::next(last)->second.writable == page->second.writable) ++last;
+        const auto address = page->first;
+        const auto bytes = static_cast<std::size_t>(last->first + pageSize - address);
+        const auto next = replacement.lower_bound(address);
+        require(next == replacement.end() || address + bytes <= next->first, "guest image overlaps a registered allocation");
+        if (next != replacement.begin()) {
+            const auto& previous = *std::prev(next)->second;
+            require(previous.address + previous.bytes <= address, "guest image overlaps a registered allocation");
+        }
+        replacement.emplace(address, std::make_shared<const Range>(Range{address, bytes, page->second.readable, page->second.writable, address, bytes, false}));
+        page = std::next(last);
+    }
     state.ranges.swap(replacement);
     state.mainImageRegistered = true;
 }
@@ -315,7 +372,7 @@ void GuestAllocationsRemove_nid_postfix(void* mutation, const void* pointer) {
 namespace {
 
 std::map<std::uint64_t, std::shared_ptr<const Range>> replaceRange(const void* pointer, std::size_t bytes, bool remove, bool readable, bool writable) {
-    const auto address = reinterpret_cast<std::uintptr_t>(pointer);
+    const auto address = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(pointer));
     require(bytes != 0 && bytes <= std::numeric_limits<std::uint64_t>::max() - address, "invalid guest protection or unmap range");
     require(!writable || readable, "writable guest allocation must be readable");
     const auto end = address + bytes;

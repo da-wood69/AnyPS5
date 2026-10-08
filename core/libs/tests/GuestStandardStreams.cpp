@@ -51,15 +51,15 @@ int APS5_VABI ___mb_cur_max_nid_postfix();
 static void Require(bool value) { if (!value) std::abort(); }
 static int APS5_VABI WriteFormatted(FileStream* stream, const char* format, ...) {
 #ifdef _WIN32
-    __builtin_sysv_va_list args;
-    __builtin_sysv_va_start(args, format);
+    APS5_VA_LIST args;
+    APS5_VA_START(args, format);
 #else
     std::va_list args;
     va_start(args, format);
 #endif
     const int result = vfprintf_nid_postfix(stream, format, args);
 #ifdef _WIN32
-    __builtin_sysv_va_end(args);
+    APS5_VA_END(args);
 #else
     va_end(args);
 #endif
@@ -67,15 +67,15 @@ static int APS5_VABI WriteFormatted(FileStream* stream, const char* format, ...)
 }
 static int APS5_VABI FormatString(char* buffer, const char* format, ...) {
 #ifdef _WIN32
-    __builtin_sysv_va_list args;
-    __builtin_sysv_va_start(args, format);
+    APS5_VA_LIST args;
+    APS5_VA_START(args, format);
 #else
     std::va_list args;
     va_start(args, format);
 #endif
     const int result = vsprintf_nid_postfix(buffer, format, args);
 #ifdef _WIN32
-    __builtin_sysv_va_end(args);
+    APS5_VA_END(args);
 #else
     va_end(args);
 #endif

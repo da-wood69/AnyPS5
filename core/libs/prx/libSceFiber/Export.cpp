@@ -200,43 +200,61 @@ static void UnpinStack(const void* context, std::uint64_t bytes) {
 extern "C" void Aps5FiberSwitchStack_nid_no_patch(void** save, void* load);
 extern "C" void Aps5FiberTrampoline_nid_no_patch();
 
-asm(R"(
-    .text
-    .globl Aps5FiberSwitchStack_nid_no_patch
-    .type Aps5FiberSwitchStack_nid_no_patch, @function
-Aps5FiberSwitchStack_nid_no_patch:
-    push %rbp
-    push %rbx
-    push %r12
-    push %r13
-    push %r14
-    push %r15
-    sub $8, %rsp
-    stmxcsr 0(%rsp)
-    fnstcw 4(%rsp)
-    mov %rsp, (%rdi)
-    mov %rsi, %rsp
-    ldmxcsr 0(%rsp)
-    fldcw 4(%rsp)
-    add $8, %rsp
-    pop %r15
-    pop %r14
-    pop %r13
-    pop %r12
-    pop %rbx
-    pop %rbp
-    ret
-    .size Aps5FiberSwitchStack_nid_no_patch, .-Aps5FiberSwitchStack_nid_no_patch
+#ifdef __APPLE__
+#define APS5_FIBER_SWITCH "_Aps5FiberSwitchStack_nid_no_patch"
+#define APS5_FIBER_TRAMPOLINE "_Aps5FiberTrampoline_nid_no_patch"
+#define APS5_FIBER_MAIN "_Aps5FiberMain_nid_no_patch"
+#define APS5_FIBER_TYPE(name)
+#define APS5_FIBER_SIZE(name)
+#else
+#define APS5_FIBER_SWITCH "Aps5FiberSwitchStack_nid_no_patch"
+#define APS5_FIBER_TRAMPOLINE "Aps5FiberTrampoline_nid_no_patch"
+#define APS5_FIBER_MAIN "Aps5FiberMain_nid_no_patch"
+#define APS5_FIBER_TYPE(name) ".type " name ", @function\n"
+#define APS5_FIBER_SIZE(name) ".size " name ", .-" name "\n"
+#endif
 
-    .globl Aps5FiberTrampoline_nid_no_patch
-    .type Aps5FiberTrampoline_nid_no_patch, @function
-Aps5FiberTrampoline_nid_no_patch:
-    mov %r12, %rdi
-    and $-16, %rsp
-    call Aps5FiberMain_nid_no_patch
-    ud2
-    .size Aps5FiberTrampoline_nid_no_patch, .-Aps5FiberTrampoline_nid_no_patch
-)");
+asm(
+    ".text\n"
+    ".globl " APS5_FIBER_SWITCH "\n"
+    APS5_FIBER_TYPE(APS5_FIBER_SWITCH)
+    APS5_FIBER_SWITCH ":\n"
+    "push %rbp\n"
+    "push %rbx\n"
+    "push %r12\n"
+    "push %r13\n"
+    "push %r14\n"
+    "push %r15\n"
+    "sub $8, %rsp\n"
+    "stmxcsr 0(%rsp)\n"
+    "fnstcw 4(%rsp)\n"
+    "mov %rsp, (%rdi)\n"
+    "mov %rsi, %rsp\n"
+    "ldmxcsr 0(%rsp)\n"
+    "fldcw 4(%rsp)\n"
+    "add $8, %rsp\n"
+    "pop %r15\n"
+    "pop %r14\n"
+    "pop %r13\n"
+    "pop %r12\n"
+    "pop %rbx\n"
+    "pop %rbp\n"
+    "ret\n"
+    APS5_FIBER_SIZE(APS5_FIBER_SWITCH)
+    ".globl " APS5_FIBER_TRAMPOLINE "\n"
+    APS5_FIBER_TYPE(APS5_FIBER_TRAMPOLINE)
+    APS5_FIBER_TRAMPOLINE ":\n"
+    "mov %r12, %rdi\n"
+    "and $-16, %rsp\n"
+    "call " APS5_FIBER_MAIN "\n"
+    "ud2\n"
+    APS5_FIBER_SIZE(APS5_FIBER_TRAMPOLINE));
+
+#undef APS5_FIBER_SWITCH
+#undef APS5_FIBER_TRAMPOLINE
+#undef APS5_FIBER_MAIN
+#undef APS5_FIBER_TYPE
+#undef APS5_FIBER_SIZE
 
 struct InitialFrame {
     std::uint32_t mxcsr;
@@ -470,4 +488,3 @@ int32_t APS5_VABI sceFiberStopContextSizeCheck(void) {
 }
 
 }
-

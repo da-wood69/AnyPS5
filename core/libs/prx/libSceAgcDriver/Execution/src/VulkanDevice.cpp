@@ -572,6 +572,12 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window) : state(std::make_u
     APS5_LOG_OUT("VulkanDevice constructor window=%p", static_cast<const void*>(window));
 #ifdef _WIN32
     state->library = SDL_LoadObject("vulkan-1.dll");
+#elif defined(__APPLE__)
+    if (const char* library = std::getenv("ANYPS5_VULKAN_LIBRARY")) state->library = SDL_LoadObject(library);
+    else {
+        state->library = SDL_LoadObject("libMoltenVK.dylib");
+        if (state->library == nullptr) state->library = SDL_LoadObject("libvulkan.1.dylib");
+    }
 #else
     state->library = SDL_LoadObject("libvulkan.so.1");
 #endif
@@ -593,24 +599,32 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window) : state(std::make_u
     VkInstanceCreateInfo create{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     create.pApplicationInfo = &application;
     std::vector<const char*> instanceExtensions;
+    std::uint32_t availableCount = 0;
+    const auto enumerateExtensions = state->InstanceFunction<PFN_vkEnumerateInstanceExtensionProperties>("vkEnumerateInstanceExtensionProperties");
+    check(enumerateExtensions(nullptr, &availableCount, nullptr), "vkEnumerateInstanceExtensionProperties");
+    std::vector<VkExtensionProperties> availableInstanceExtensions(availableCount);
+    check(enumerateExtensions(nullptr, &availableCount, availableInstanceExtensions.data()), "vkEnumerateInstanceExtensionProperties");
+    const auto hasInstanceExtension = [&](const char* name) {
+        return std::any_of(availableInstanceExtensions.begin(), availableInstanceExtensions.end(), [&](const auto& item) { return std::strcmp(item.extensionName, name) == 0; });
+    };
     if (window != nullptr) {
         APS5_LOG_OUT("Presentation window context=%p extent=%ux%u extensions=%zu", window->context, window->width, window->height, window->extensions.size());
         require(window->context && window->createSurface && window->getDrawableSize && window->width && window->height, "invalid window descriptor");
         instanceExtensions.assign(window->extensions.begin(), window->extensions.end());
-        std::uint32_t availableCount = 0;
-        const auto enumerateExtensions = state->InstanceFunction<PFN_vkEnumerateInstanceExtensionProperties>("vkEnumerateInstanceExtensionProperties");
-        check(enumerateExtensions(nullptr, &availableCount, nullptr), "vkEnumerateInstanceExtensionProperties");
-        std::vector<VkExtensionProperties> available(availableCount);
-        check(enumerateExtensions(nullptr, &availableCount, available.data()), "vkEnumerateInstanceExtensionProperties");
         for (const auto* name : instanceExtensions) {
             require(name != nullptr, "null instance extension");
-            if (std::none_of(available.begin(), available.end(), [&](const auto& item) { return std::strcmp(item.extensionName, name) == 0; })) {
+            if (!hasInstanceExtension(name)) {
                 throw std::runtime_error(std::string("Vulkan presentation: required instance extension missing: ") + name);
             }
         }
-        create.enabledExtensionCount = static_cast<std::uint32_t>(instanceExtensions.size());
-        create.ppEnabledExtensionNames = instanceExtensions.data();
     }
+#ifdef __APPLE__
+    require(hasInstanceExtension(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME), "VK_KHR_portability_enumeration is unavailable");
+    instanceExtensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+    create.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+#endif
+    create.enabledExtensionCount = static_cast<std::uint32_t>(instanceExtensions.size());
+    create.ppEnabledExtensionNames = instanceExtensions.data();
     check(state->InstanceFunction<PFN_vkCreateInstance>("vkCreateInstance")(&create, nullptr, &state->instance), "vkCreateInstance");
     APS5_LOG_OUT("Vulkan instance created instance=%p", reinterpret_cast<void*>(state->instance));
     if (window != nullptr) {
@@ -758,6 +772,11 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window) : state(std::make_u
     }
     std::vector<const char*> deviceExtensions;
     if (window != nullptr) deviceExtensions.assign(presentationExtensions.begin(), presentationExtensions.end());
+#ifdef __APPLE__
+    constexpr const char* portabilitySubset = "VK_KHR_portability_subset";
+    require(hasExtension(portabilitySubset), "VK_KHR_portability_subset is unavailable");
+    deviceExtensions.push_back(portabilitySubset);
+#endif
     if (state->fragmentShaderBarycentric) {
         deviceExtensions.push_back(VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME);
         state->capabilities.push_back(spv::CapabilityFragmentBarycentricKHR);

@@ -6,6 +6,11 @@
 #else
 #include <sched.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <crt_externs.h>
+#include <mach/mach.h>
+#include <pthread.h>
+#endif
 #endif
 
 #include "SceTypes.hpp"
@@ -51,6 +56,11 @@ public:
         if (size >= path.size())
             throw std::runtime_error("Executable path exceeds the guest argument buffer");
         arguments.emplace_back(path.data(), size);
+#elif defined(__APPLE__)
+        const int count = *_NSGetArgc();
+        char** values = *_NSGetArgv();
+        if (count < 0 || (count != 0 && values == nullptr)) throw std::runtime_error("Cannot read process arguments");
+        for (int index = 0; index < count; ++index) arguments.emplace_back(values[index]);
 #else
         std::ifstream stream("/proc/self/cmdline", std::ios::binary);
         if (!stream)
@@ -191,6 +201,12 @@ int APS5_VABI sceKernelGetCurrentCpu(void) {
         index += count;
     }
     return static_cast<int>(index);
+#elif defined(__APPLE__)
+    std::size_t cpu = 0;
+    const int error = pthread_cpu_number_np(&cpu);
+    if (error != 0 || cpu > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+        throw std::system_error(error != 0 ? error : ERANGE, std::generic_category(), "Reading current processor");
+    return static_cast<int>(cpu);
 #else
     const int cpu = ::sched_getcpu();
     if (cpu < 0)
@@ -289,6 +305,41 @@ int APS5_VABI getrusage_nid_postfix(int who, GuestResourceUsage* usage) {
     usage->ru_nsignals = 0;
     usage->ru_nvcsw = 0;
     usage->ru_nivcsw = 0;
+#elif defined(__APPLE__)
+    struct rusage native{};
+    if (who == 0) {
+        if (::getrusage(RUSAGE_SELF, &native) != 0)
+            throw std::system_error(errno, std::generic_category(), "getrusage: getrusage failed");
+    } else {
+        thread_basic_info_data_t thread{};
+        mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
+        const auto port = mach_thread_self();
+        const auto result = thread_info(port, THREAD_BASIC_INFO, reinterpret_cast<thread_info_t>(&thread), &count);
+        mach_port_deallocate(mach_task_self(), port);
+        if (result != KERN_SUCCESS) throw std::runtime_error("getrusage: thread_info failed");
+        native.ru_utime.tv_sec = thread.user_time.seconds;
+        native.ru_utime.tv_usec = thread.user_time.microseconds;
+        native.ru_stime.tv_sec = thread.system_time.seconds;
+        native.ru_stime.tv_usec = thread.system_time.microseconds;
+    }
+    usage->ru_utime.tv_sec = static_cast<std::int64_t>(native.ru_utime.tv_sec);
+    usage->ru_utime.tv_usec = static_cast<std::int64_t>(native.ru_utime.tv_usec);
+    usage->ru_stime.tv_sec = static_cast<std::int64_t>(native.ru_stime.tv_sec);
+    usage->ru_stime.tv_usec = static_cast<std::int64_t>(native.ru_stime.tv_usec);
+    usage->ru_maxrss = static_cast<std::int64_t>(native.ru_maxrss);
+    usage->ru_ixrss = static_cast<std::int64_t>(native.ru_ixrss);
+    usage->ru_idrss = static_cast<std::int64_t>(native.ru_idrss);
+    usage->ru_isrss = static_cast<std::int64_t>(native.ru_isrss);
+    usage->ru_minflt = static_cast<std::int64_t>(native.ru_minflt);
+    usage->ru_majflt = static_cast<std::int64_t>(native.ru_majflt);
+    usage->ru_nswap = static_cast<std::int64_t>(native.ru_nswap);
+    usage->ru_inblock = static_cast<std::int64_t>(native.ru_inblock);
+    usage->ru_oublock = static_cast<std::int64_t>(native.ru_oublock);
+    usage->ru_msgsnd = static_cast<std::int64_t>(native.ru_msgsnd);
+    usage->ru_msgrcv = static_cast<std::int64_t>(native.ru_msgrcv);
+    usage->ru_nsignals = static_cast<std::int64_t>(native.ru_nsignals);
+    usage->ru_nvcsw = static_cast<std::int64_t>(native.ru_nvcsw);
+    usage->ru_nivcsw = static_cast<std::int64_t>(native.ru_nivcsw);
 #else
     struct rusage native{};
     if (::getrusage(who == 0 ? RUSAGE_SELF : RUSAGE_THREAD, &native) != 0)

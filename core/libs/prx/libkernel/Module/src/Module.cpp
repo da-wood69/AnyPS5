@@ -72,6 +72,7 @@ extern "C" {
 void* APS5_VABI dlopen_nid_postfix(const char* path, int flags);
 void* APS5_VABI dlsym_nid_postfix(void* handle, const char* name);
 int APS5_VABI dlclose_nid_postfix(void* handle);
+int APS5_VABI sceKernelGetModuleInfoFromAddr(std::uint64_t address, int flags, ModuleInfoEx* info);
 }
 
 namespace {
@@ -106,6 +107,20 @@ int APS5_VABI sceKernelGetModuleInfoForUnwind(uint64_t addr, int flags, ModuleIn
   path[len] = '\0';
   std::strncpy(info->name, path, sizeof(info->name) - 1);
   info->name[sizeof(info->name) - 1] = '\0';
+  return 0;
+#elif defined(__APPLE__)
+  ModuleInfoEx module{};
+  module.st_size = sizeof(module);
+  const int result = sceKernelGetModuleInfoFromAddr(addr, 2, &module);
+  if (result != 0) return result;
+  info->st_size = sizeof(ModuleInfoForUnwind);
+  std::strncpy(info->name, module.name, sizeof(info->name) - 1);
+  info->name[sizeof(info->name) - 1] = '\0';
+  info->eh_frame_hdr_addr = module.eh_frame_hdr_addr;
+  info->eh_frame_addr = module.eh_frame_addr;
+  info->eh_frame_size = module.eh_frame_size;
+  info->seg0_addr = module.segment_count != 0 ? module.segments[0].address : 0;
+  info->seg0_size = module.segment_count != 0 ? module.segments[0].size : 0;
   return 0;
 #else
   std::ifstream maps("/proc/self/maps");

@@ -17,24 +17,24 @@ static void Require(bool condition) {
 }
 
 static int APS5_VABI FormatList(char* buffer, size_t size, const char* format, ...) {
-    __builtin_sysv_va_list args;
-    __builtin_sysv_va_start(args, format);
+    APS5_VA_LIST args;
+    APS5_VA_START(args, format);
     VaList list;
     std::memcpy(&list, args, sizeof(list));
     const VaList original = list;
     const int result = vsnprintf_nid_postfix(buffer, size, format, &list);
     Require(std::memcmp(&list, &original, sizeof(list)) == 0);
-    __builtin_sysv_va_end(args);
+    APS5_VA_END(args);
     return result;
 }
 
 static int APS5_VABI PrintList(const char* format, ...) {
-    __builtin_sysv_va_list args;
-    __builtin_sysv_va_start(args, format);
+    APS5_VA_LIST args;
+    APS5_VA_START(args, format);
     VaList list;
     std::memcpy(&list, args, sizeof(list));
     const int result = vprintf_nid_postfix(format, &list);
-    __builtin_sysv_va_end(args);
+    APS5_VA_END(args);
     return result;
 }
 
