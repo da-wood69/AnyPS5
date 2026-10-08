@@ -841,7 +841,10 @@ void EmitControlNop(SpirvValueEmitContext& context) {
 }
 
 void EmitWaitcnt(SpirvValueEmitContext& context) {
-    EmitVoid(context);
+    auto& state = context.state;
+    const auto semantics = spv::MemorySemanticsAcquireReleaseMask | spv::MemorySemanticsUniformMemoryMask |
+                           spv::MemorySemanticsImageMemoryMask;
+    state.module.AddFunction(spv::OpMemoryBarrier, ConstantU32(state, spv::ScopeDevice), ConstantU32(state, semantics));
 }
 
 void EmitSendmsg(SpirvValueEmitContext& context) {
