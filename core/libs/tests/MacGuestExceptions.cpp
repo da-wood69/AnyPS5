@@ -3,10 +3,14 @@
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
+#include <functional>
+#include <memory>
 #include <stdexcept>
 #include <unwind.h>
 
 extern "C" [[noreturn]] void _ZSt14_Xout_of_rangePKc_nid_postfix(const char*);
+extern "C" [[noreturn]] void _ZNSt8__sce_v219_Xbad_function_callEv_nid_postfix();
+extern "C" [[noreturn]] void _ZSt19_Throw_bad_weak_ptrv_nid_postfix();
 extern "C" unsigned __cxa_uncaught_exceptions_nid_postfix();
 extern "C" void* __cxa_begin_catch_nid_postfix(void*);
 extern "C" void __cxa_end_catch_nid_postfix();
@@ -52,6 +56,18 @@ int main() {
         assert(std::strcmp(error.what(), "macOS guest unwind") == 0);
     }
     assert(destroyed == 3);
+    try {
+        _ZNSt8__sce_v219_Xbad_function_callEv_nid_postfix();
+        assert(false);
+    } catch (const std::bad_function_call& error) {
+        assert(std::strcmp(error.what(), "std::bad_function_call") == 0);
+    }
+    try {
+        _ZSt19_Throw_bad_weak_ptrv_nid_postfix();
+        assert(false);
+    } catch (const std::bad_weak_ptr& error) {
+        assert(std::strcmp(error.what(), "bad_weak_ptr") == 0);
+    }
     int frames = 0;
     const auto result = _Unwind_Backtrace_nid_postfix([](_Unwind_Context* context, void* argument) {
         assert(_Unwind_GetIP_nid_postfix(context) != 0);

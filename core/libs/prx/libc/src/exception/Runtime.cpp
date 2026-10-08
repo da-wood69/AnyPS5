@@ -102,8 +102,29 @@ void Cleanup(_Unwind_Reason_Code reason, _Unwind_Exception* exception) {
     } else Release(header + 1);
 }
 
+bool EquivalentStandardName(const char* libcxx, const char* guest) {
+#ifdef __APPLE__
+    constexpr const char prefix[] = "NSt3__1";
+    const auto length = std::strlen(libcxx);
+    return std::strncmp(libcxx, prefix, sizeof(prefix) - 1) == 0 &&
+        length > sizeof(prefix) && libcxx[length - 1] == 'E' &&
+        std::strncmp(guest, "St", 2) == 0 &&
+        std::strlen(guest + 2) == length - sizeof(prefix) &&
+        std::memcmp(libcxx + sizeof(prefix) - 1, guest + 2, length - sizeof(prefix)) == 0;
+#else
+    (void)libcxx;
+    (void)guest;
+    return false;
+#endif
+}
+
 bool Equal(const std::type_info* a, const std::type_info* b) {
-    return a == b || (a && b && std::strcmp(a->name(), b->name()) == 0);
+    if (a == b) return true;
+    if (!a || !b) return false;
+    const char* aName = a->name();
+    const char* bName = b->name();
+    return std::strcmp(aName, bName) == 0 || EquivalentStandardName(aName, bName) ||
+        EquivalentStandardName(bName, aName);
 }
 
 const char* Kind(const std::type_info* type) {

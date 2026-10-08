@@ -3,17 +3,15 @@
 
 #include <cxxabi.h>
 
-#ifdef __APPLE__
-#include <cstddef>
+#ifdef _LIBCPPABI_VERSION
 #include <typeinfo>
 
 namespace __cxxabiv1 {
-
 class __class_type_info : public std::type_info {
 public:
-    enum __sub_kind : int {};
-    struct __upcast_result {};
-    struct __dyncast_result {};
+    enum __sub_kind { __unknown = 0 };
+    struct __upcast_result;
+    struct __dyncast_result;
 };
 
 class __si_class_type_info : public __class_type_info {
@@ -46,8 +44,9 @@ public:
     const __class_type_info* __context;
 };
 
+#ifdef __APPLE__
 extern "C" int __cxa_thread_atexit(void (*)(void*), void*, void*) noexcept;
-
+#endif
 }
 #endif
 

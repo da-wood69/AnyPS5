@@ -18,7 +18,6 @@
 
 extern "C" _Unwind_Reason_Code __gxx_personality_v0(int, _Unwind_Action, std::uint64_t, _Unwind_Exception*, _Unwind_Context*);
 extern "C" _Unwind_Reason_Code __gcc_personality_v0(int, _Unwind_Action, std::uint64_t, _Unwind_Exception*, _Unwind_Context*);
-extern "C" _Unwind_Reason_Code LibcGccPersonality(int, _Unwind_Action, std::uint64_t, _Unwind_Exception*, _Unwind_Context*);
 
 namespace LibcUnwind {
 _Unwind_Reason_Code CallPersonality(Word personality, _Unwind_Action actions, _Unwind_Exception* exception, _Unwind_Context* context) {
@@ -33,8 +32,8 @@ _Unwind_Reason_Code CallPersonality(Word personality, _Unwind_Action actions, _U
 
     if (personality == reinterpret_cast<Word>(__gxx_personality_v0_nid_postfix) || personality == reinterpret_cast<Word>(__gxx_personality_v0))
         return __gxx_personality_v0_nid_postfix(1, actions, exception->exception_class, exception, context);
-    if (personality == reinterpret_cast<Word>(__gcc_personality_v0))
-        return LibcGccPersonality(1, actions, exception->exception_class, exception, context);
+    if (personality == reinterpret_cast<Word>(__gcc_personality_v0_nid_postfix) || personality == reinterpret_cast<Word>(__gcc_personality_v0))
+        return __gcc_personality_v0_nid_postfix(1, actions, exception->exception_class, exception, context);
     return (actions & _UA_SEARCH_PHASE) ? _URC_FATAL_PHASE1_ERROR : _URC_FATAL_PHASE2_ERROR;
 }
 struct Lookup { Word pc; const Byte* fde {}; Word text {}; Word data {}; };
@@ -239,7 +238,7 @@ bool FindAppleCompact(Word pc, const AppleFrameRange& range, AppleCompactInfo& r
 }
 #endif
 
-#ifdef __linux__
+#if defined(__linux__) || defined(__APPLE__)
 int FindFrame(dl_phdr_info* info, std::size_t, void* argument) {
     auto& query = *static_cast<Lookup*>(argument);
     const Byte* header = nullptr;
@@ -408,6 +407,17 @@ bool DecodeFrame(_Unwind_Context& context, Frame& frame) {
     }
     return false;
 #else
+    dl_iterate_phdr(FindFrame, &query);
+    if (query.fde) {
+        Frame candidate{};
+        if (DecodeCandidate(context, candidate, query)) {
+            frame = candidate;
+            return true;
+        }
+    }
+    query.fde = nullptr;
+    query.text = 0;
+    query.data = 0;
     AppleFrameRange range;
     if (!FindAppleFrameRange(query.pc, range)) return false;
     query.text = range.text;

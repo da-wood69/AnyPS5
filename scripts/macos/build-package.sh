@@ -43,6 +43,7 @@ cmake -S "$repo_dir" -B "$build_dir" -G Ninja \
 cmake --build "$build_dir" --target \
     relinker anyps5-runner libs \
     macos_vulkan_probe_tests macos_guest_exception_tests \
+    exception_personality_tests guest_poll_tests \
     guest_dynamic_loader_tests guest_module_info_tests guest_thread_self_tests \
     host_thread_local_tests guest_math_tests agc_shader_disk_cache_tests \
     guest_font_tests guest_nanosleep_tests guest_udp_tests guest_directory_entry_tests \
@@ -56,7 +57,7 @@ cp "$moltenvk" "$package_dir/libMoltenVK.dylib"
 
 ANYPS5_VULKAN_LIBRARY="$package_dir/libMoltenVK.dylib" \
     ctest --test-dir "$build_dir" \
-        -R '^(macos_guest_exceptions|macos_vulkan_probe|guest_dynamic_loader|guest_module_info|guest_thread_self|macos_runner_entry|host_thread_local|guest_math|agc_shader_disk_cache|guest_font|guest_nanosleep|guest_udp|guest_directory_entries)$' \
+        -R '^(macos_guest_exceptions|exception_personality|macos_vulkan_probe|guest_dynamic_loader|guest_module_info|guest_thread_self|macos_runner_entry|host_thread_local|guest_math|agc_shader_disk_cache|guest_font|guest_nanosleep|guest_udp|guest_poll|guest_directory_entries)$' \
         --output-on-failure
 
 echo "AnyPS5 macOS package: $package_dir"
