@@ -16,9 +16,9 @@ Includes a [relinker](core/relinker) and implementations of [system prx librarie
 
 [List of verified games](docs/user/COMPATIBILITY.md)
 
-Dreaming Sarah (2D platformer) runs at a stable 60 fps on a GTX 1050 Ti / i5-7500 3.4GHz.
+Dreaming Sarah (PPSA02929) reaches its title menu on an Apple M1 Pro under Rosetta 2 at 3840x2160 and approximately 55-57 FPS against the game's 60 FPS cap. The same title runs at a stable 60 FPS on a GTX 1050 Ti / i5-7500 3.4GHz.
 
-The macOS runtime, guest loader, TLS bridge, exception unwinder, and Metal-backed presentation path are covered by integration tests. Game compatibility and performance on macOS still require title-by-title verification.
+The macOS runtime, guest loader, TLS bridge, exception unwinder, and Metal-backed presentation path are covered by integration tests. macOS game compatibility beyond the verified Dreaming Sarah title menu still requires title-by-title testing.
 
 Unsupported or unexpected states strictly throw `std::runtime_error`. `what()` is printed to stderr and the process terminates.
 
