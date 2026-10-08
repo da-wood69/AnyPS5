@@ -196,7 +196,7 @@ extern "C" void* AnyPs5GuestDlopen(const char* path, int, char* error, std::size
 }
 
 extern "C" void* AnyPs5GuestDlsym(void* handle, const char* name) {
-    if (!activeRuntime || !handle || !name || !*name) return nullptr;
+    if (!activeRuntime || !name || !*name) return nullptr;
     auto* result = activeRuntime->GuestSymbol(handle, name);
     if (TraceLoader()) std::cerr << "Guest dlsym: " << name << " -> " << result << '\n';
     return result;
@@ -889,11 +889,25 @@ void* Runtime::OpenGuest(const std::filesystem::path& path) {
 void* Runtime::GuestSymbol(void* handle, const std::string& name) const {
     std::lock_guard lock(mutex);
     const auto* requested = static_cast<const ElfImage*>(handle);
+    const auto find = [&](const ElfImage& image) -> void* {
+        if (auto* value = image.FindExport(name)) return value;
+        if (auto tls = image.FindTlsExport(name)) return const_cast<Runtime*>(this)->TlsAddress(tls->module, tls->value);
+        return nullptr;
+    };
+    if (requested == nullptr) {
+        const auto main = guests.find(executable);
+        if (main != guests.end()) {
+            if (auto* value = find(*main->second)) return value;
+        }
+        for (const auto& [path, image] : guests) {
+            if (main != guests.end() && image.get() == main->second.get()) continue;
+            if (auto* value = find(*image)) return value;
+        }
+        return nullptr;
+    }
     for (const auto& [path, image] : guests) {
         if (image.get() == requested) {
-            if (auto* value = image->FindExport(name)) return value;
-            if (auto tls = image->FindTlsExport(name)) return const_cast<Runtime*>(this)->TlsAddress(tls->module, tls->value);
-            return nullptr;
+            return find(*image);
         }
     }
     return nullptr;
