@@ -3,6 +3,7 @@
 from pathlib import Path
 import hashlib
 import os
+import shutil
 import signal
 import struct
 import subprocess
@@ -199,6 +200,7 @@ def main():
     libraries = Path(sys.argv[3]).resolve()
     with tempfile.TemporaryDirectory(prefix="anyps5-macos-runner-") as directory:
         root = Path(directory)
+        shutil.copy2(runner, root / "anyps5-runner")
         source = root / "input.elf"
         output = root / "output.elf"
         source.write_bytes(argv_fixture())
@@ -211,6 +213,15 @@ def main():
         assert valid.returncode == -signal.SIGTRAP, (valid.returncode, valid.stdout, valid.stderr)
         invalid = subprocess.run([str(runner), str(output), "Z", "extra"], capture_output=True, timeout=20)
         assert invalid.returncode == -signal.SIGILL, (invalid.returncode, invalid.stdout, invalid.stderr)
+        autorun_image = argv_fixture()
+        autorun_image[0x4010] = 0xC3
+        source.write_bytes(autorun_image)
+        autorun_output = root / "autorun.elf"
+        autorun = subprocess.run(
+            [str(relinker), "--macos", "--skip-sce-module", "--autorun", str(source), str(autorun_output)],
+            input="\n", capture_output=True, text=True, timeout=30)
+        assert autorun.returncode == 0, (autorun.stdout, autorun.stderr)
+        assert "Raw exit code: 0; Unpacked: 0" in autorun.stdout, autorun.stdout
         source.write_bytes(direct_tls_fixture())
         tls_output = root / "tls.elf"
         converted = subprocess.run(

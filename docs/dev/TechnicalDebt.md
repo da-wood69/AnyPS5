@@ -11,7 +11,7 @@
 ### macOS runtime
 
 - The macOS target is x86-64 only. Apple Silicon runs it through Rosetta 2; there is no arm64 translation or universal runner yet.
-- Darwin cannot execute the relinked ELF directly, so `anyps5-runner` maps it in-process. This is a command-line package rather than a signed `.app` bundle, and `--autorun` does not launch it yet.
+- Darwin cannot execute the relinked ELF directly, so `anyps5-runner` maps it in-process. This is a command-line package rather than a signed `.app` bundle.
 - The TLS rewriter supports the direct PS5 accesses used by the standard model (`FS:0` for the thread pointer and `FS:0x28` for the stack guard) for 64-bit loads/ALU reads and immediate stores. Another direct FS displacement or instruction form is rejected during relinking.
 - MoltenVK does not expose every Vulkan/AMD behavior exercised by the AGC conformance tests. Metal currently lacks the 64-bit buffer, global, and image atomics used by some shaders, and MoltenVK reports a 31-storage-buffer per-stage limit on the tested M1 Pro. Titles using those paths can fail even though device creation and swapchain presentation work.
 - No title is yet end-to-end verified on macOS. The runtime and graphics bridge tests run on an Apple M1 Pro under Rosetta 2, but gameplay and performance require a lawful decrypted title dump.

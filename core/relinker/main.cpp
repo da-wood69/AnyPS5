@@ -20,6 +20,8 @@
 #include <relinker/pipeline/RelinkerPipeline.hpp>
 #include <relinker/guest/GuestImage.hpp>
 #include <codegen/IAmd64OnlyConverter.hpp>
+#include <algorithm>
+#include <array>
 #include <map>
 #include <codegen/CodegenException.hpp>
 #include <filesystem>
@@ -148,8 +150,17 @@ int main(const int argc, char* argv[]) {
         if (args.runPath != "$ORIGIN/libs") std::cout << "Custom library search path (--rpath): " << args.runPath << '\n';
 
         if (args.autorun) {
-            if (args.toMacos) throw std::runtime_error("--autorun for macOS is not available yet; launch the output with anyps5-runner");
-            return Cli::Autorun(absPath, args.toWindows);
+            std::string launcher;
+            if (args.toMacos) {
+                const std::array candidates{
+                    std::filesystem::path(absPath).parent_path() / "anyps5-runner",
+                    std::filesystem::absolute(argv[0]).parent_path() / "anyps5-runner",
+                };
+                const auto found = std::find_if(candidates.begin(), candidates.end(), [](const auto& path) { return std::filesystem::is_regular_file(path); });
+                if (found == candidates.end()) throw std::runtime_error("--autorun needs anyps5-runner beside the output executable or relinker");
+                launcher = std::filesystem::absolute(*found).string();
+            }
+            return Cli::Autorun(absPath, args.toWindows, launcher);
         }
 
     } catch (const Domain::RelinkerException& e) {

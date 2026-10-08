@@ -27,7 +27,7 @@ struct Args {
 
 Args ParseArgs(int argc, char* argv[]);
 
-int Autorun(const std::string& absPath, bool toWindows);
+int Autorun(const std::string& absPath, bool toWindows, const std::string& launcherPath = {});
 
 }
 

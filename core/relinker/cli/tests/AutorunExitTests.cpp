@@ -40,6 +40,11 @@ int main(int, char* argv[]) {
                 if (code != 42) throw std::runtime_error("Autorun changed exit code 42 to " +
                     std::to_string(code) + " for " + child.string());
             }
+#ifndef _WIN32
+            const int launched = Cli::Autorun(child.string(), false, child.string());
+            if (launched != 42) throw std::runtime_error("Autorun launcher changed exit code 42 to " +
+                std::to_string(launched) + " for " + child.string());
+#endif
         }
 #ifndef _WIN32
         std::filesystem::rename(child, signaled);

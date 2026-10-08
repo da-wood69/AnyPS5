@@ -7,8 +7,23 @@
 
 namespace Cli {
 
-int Autorun(const std::string& absPath, bool toWindows) {
-    if (!toWindows) {
+namespace {
+
+#ifndef _WIN32
+std::string ShellQuote(const std::string& value) {
+    std::string result = "'";
+    for (const char character : value) {
+        if (character == '\'') result += "'\\''";
+        else result += character;
+    }
+    return result + '\'';
+}
+#endif
+
+}
+
+int Autorun(const std::string& absPath, bool toWindows, const std::string& launcherPath) {
+    if (!toWindows && launcherPath.empty()) {
         std::filesystem::permissions(absPath,
             std::filesystem::perms::owner_exec |
             std::filesystem::perms::group_exec |
@@ -17,14 +32,9 @@ int Autorun(const std::string& absPath, bool toWindows) {
     }
 
 #ifdef _WIN32
-    const std::string cmd = "\"" + absPath + "\"";
+    const std::string cmd = launcherPath.empty() ? "\"" + absPath + "\"" : "\"" + launcherPath + "\" \"" + absPath + "\"";
 #else
-    std::string cmd = "'";
-    for (const char character : absPath) {
-        if (character == '\'') cmd += "'\\''";
-        else cmd += character;
-    }
-    cmd += '\'';
+    const std::string cmd = launcherPath.empty() ? ShellQuote(absPath) : ShellQuote(launcherPath) + " " + ShellQuote(absPath);
 #endif
     const int rawCode = std::system(cmd.c_str());
 
