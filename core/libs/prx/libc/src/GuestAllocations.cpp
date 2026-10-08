@@ -15,6 +15,7 @@
 #endif
 #include <windows.h>
 #elif defined(__APPLE__)
+#include <dlfcn.h>
 #include <mach-o/dyld.h>
 #include <mach-o/loader.h>
 #include <mach/vm_prot.h>
@@ -184,28 +185,44 @@ void GuestAllocationsRegisterMainImage_nid_postfix(void*) {
     };
     std::map<std::uint64_t, Page> pages;
     const auto pageSize = static_cast<std::uint64_t>(::sysconf(_SC_PAGESIZE));
-    const auto* image = reinterpret_cast<const mach_header_64*>(_dyld_get_image_header(0));
-    require(image != nullptr && image->magic == MH_MAGIC_64, "cannot locate the main guest image");
-    const auto slide = _dyld_get_image_vmaddr_slide(0);
-    auto* command = reinterpret_cast<const load_command*>(reinterpret_cast<const std::uint8_t*>(image) + sizeof(*image));
-    for (std::uint32_t index = 0; index < image->ncmds; ++index) {
-        require(command->cmdsize >= sizeof(*command), "invalid main guest image load command");
-        if (command->cmd == LC_SEGMENT_64) {
-            require(command->cmdsize >= sizeof(segment_command_64), "invalid main guest image segment");
-            const auto* segment = reinterpret_cast<const segment_command_64*>(command);
-            if (segment->vmsize != 0 && segment->initprot != VM_PROT_NONE) {
-                const auto address = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(segment->vmaddr) + slide);
-                require(segment->vmsize <= std::numeric_limits<std::uintptr_t>::max() - address, "invalid main guest image range");
-                const auto start = address & ~(pageSize - 1);
-                const auto end = (address + segment->vmsize + pageSize - 1) & ~(pageSize - 1);
-                for (auto page = start; page < end; page += pageSize) {
-                    auto& entry = pages[page];
-                    entry.readable = entry.readable || (segment->initprot & (VM_PROT_READ | VM_PROT_WRITE)) != 0;
-                    entry.writable = entry.writable || (segment->initprot & VM_PROT_WRITE) != 0;
-                }
-            }
+    const auto addPages = [&](std::uintptr_t address, std::size_t bytes, bool readable, bool writable) {
+        require(bytes <= std::numeric_limits<std::uintptr_t>::max() - address, "invalid main guest image range");
+        require(address + bytes <= std::numeric_limits<std::uintptr_t>::max() - (pageSize - 1), "invalid main guest image range");
+        const auto start = address & ~(pageSize - 1);
+        const auto end = (address + bytes + pageSize - 1) & ~(pageSize - 1);
+        for (auto page = start; page < end; page += pageSize) {
+            auto& entry = pages[page];
+            entry.readable = entry.readable || readable;
+            entry.writable = entry.writable || writable;
         }
-        command = reinterpret_cast<const load_command*>(reinterpret_cast<const std::uint8_t*>(command) + command->cmdsize);
+    };
+    using SegmentVisitor = bool (*)(std::uintptr_t, std::size_t, bool, bool, void*);
+    using GuestSegments = bool (*)(SegmentVisitor, void*);
+    const auto guestSegments = reinterpret_cast<GuestSegments>(dlsym(RTLD_DEFAULT, "AnyPs5GuestMainImageSegments"));
+    if (guestSegments != nullptr) {
+        const auto collect = [](std::uintptr_t address, std::size_t bytes, bool readable, bool writable, void* context) {
+            (*static_cast<decltype(addPages)*>(context))(address, bytes, readable, writable);
+            return true;
+        };
+        require(guestSegments(collect, const_cast<void*>(static_cast<const void*>(&addPages))), "cannot locate the main guest image");
+    } else {
+        const auto* image = reinterpret_cast<const mach_header_64*>(_dyld_get_image_header(0));
+        require(image != nullptr && image->magic == MH_MAGIC_64, "cannot locate the main guest image");
+        const auto slide = _dyld_get_image_vmaddr_slide(0);
+        auto* command = reinterpret_cast<const load_command*>(reinterpret_cast<const std::uint8_t*>(image) + sizeof(*image));
+        for (std::uint32_t index = 0; index < image->ncmds; ++index) {
+            require(command->cmdsize >= sizeof(*command), "invalid main guest image load command");
+            if (command->cmd == LC_SEGMENT_64) {
+                require(command->cmdsize >= sizeof(segment_command_64), "invalid main guest image segment");
+                const auto* segment = reinterpret_cast<const segment_command_64*>(command);
+                if (segment->vmsize != 0 && segment->initprot != VM_PROT_NONE)
+                    addPages(static_cast<std::uintptr_t>(static_cast<std::intptr_t>(segment->vmaddr) + slide),
+                             static_cast<std::size_t>(segment->vmsize),
+                             (segment->initprot & (VM_PROT_READ | VM_PROT_WRITE)) != 0,
+                             (segment->initprot & VM_PROT_WRITE) != 0);
+            }
+            command = reinterpret_cast<const load_command*>(reinterpret_cast<const std::uint8_t*>(command) + command->cmdsize);
+        }
     }
     require(!pages.empty(), "main guest image has no loadable segments");
     auto replacement = state.ranges;

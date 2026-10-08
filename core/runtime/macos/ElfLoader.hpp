@@ -24,6 +24,8 @@ struct TlsSymbol {
     std::uint64_t value;
 };
 
+using GuestSegmentVisitor = bool (*)(std::uintptr_t address, std::size_t bytes, bool readable, bool writable, void* context);
+
 class ElfImage {
 public:
     ElfImage(Runtime& runtime, std::filesystem::path path, bool mainImage);
@@ -36,6 +38,7 @@ public:
     void* FindExport(const std::string& name) const;
     std::optional<TlsSymbol> FindTlsExport(const std::string& name) const;
     bool Contains(std::uintptr_t address) const;
+    const void* ProcessParameters() const;
     const std::filesystem::path& Path() const { return path; }
     std::uint64_t TlsModule() const { return tlsModule; }
     std::uint64_t TlsOffset() const { return tlsOffset; }
@@ -106,6 +109,8 @@ public:
     void* GuestSymbol(void* handle, const std::string& name) const;
     int CloseGuest(void* handle) const;
     bool ModuleInfo(std::uintptr_t address, ModuleInfoEx& info) const;
+    const void* ProcessParameters() const;
+    bool VisitMainImageSegments(GuestSegmentVisitor visitor, void* context) const;
     void EnterThread();
     void LeaveThread();
     void PrepareCurrentThread();

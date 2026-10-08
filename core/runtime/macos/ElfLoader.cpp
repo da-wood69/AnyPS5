@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
+#include <dispatch/dispatch.h>
 #include <fstream>
 #include <iostream>
 #include <limits>
@@ -81,6 +82,12 @@ extern "C" void AnyPs5GuestThreadEnter() {
 
 extern "C" void AnyPs5GuestThreadLeave() {
     if (activeRuntime) activeRuntime->LeaveThread();
+}
+
+extern "C" void AnyPs5RunOnMainThread(void (*callback)(void*), void* context) {
+    if (!callback) return;
+    if (pthread_main_np() != 0) callback(context);
+    else dispatch_sync_f(dispatch_get_main_queue(), context, callback);
 }
 
 void CopyError(char* output, std::size_t capacity, const std::string& message) {
@@ -214,6 +221,26 @@ extern "C" int AnyPs5GuestModuleInfo(std::uint64_t address, ModuleInfoEx* info) 
     }
 }
 
+extern "C" const void* AnyPs5GuestProcessParameters() {
+    if (!activeRuntime) return nullptr;
+    try {
+        return activeRuntime->ProcessParameters();
+    } catch (const std::exception& exception) {
+        if (TraceLoader()) std::cerr << "Guest process-parameter query failed: " << exception.what() << '\n';
+        return nullptr;
+    }
+}
+
+extern "C" bool AnyPs5GuestMainImageSegments(GuestSegmentVisitor visitor, void* context) {
+    if (!activeRuntime || !visitor) return false;
+    try {
+        return activeRuntime->VisitMainImageSegments(visitor, context);
+    } catch (const std::exception& exception) {
+        if (TraceLoader()) std::cerr << "Guest main-image query failed: " << exception.what() << '\n';
+        return false;
+    }
+}
+
 ElfImage::ElfImage(Runtime& runtime, std::filesystem::path path, bool mainImage)
     : runtime(runtime), path(std::filesystem::weakly_canonical(std::move(path))), mainImage(mainImage) {
     ReadFile();
@@ -249,6 +276,13 @@ void ElfImage::ReadFile() {
 
 void ElfImage::Map() {
     const auto page = static_cast<std::uint64_t>(getpagesize());
+    std::uint64_t mappingAlignment = page;
+    for (const auto& program : programs) {
+        if (program.type != ProgramLoad || program.memorySize == 0) continue;
+        if (program.alignment > 1 && !std::has_single_bit(program.alignment))
+            throw std::runtime_error("Invalid PT_LOAD alignment in " + path.string());
+        mappingAlignment = std::max(mappingAlignment, program.alignment);
+    }
     std::uint64_t first = std::numeric_limits<std::uint64_t>::max();
     std::uint64_t last = 0;
     for (const auto& program : programs) {
@@ -256,17 +290,27 @@ void ElfImage::Map() {
         if (program.fileSize > program.memorySize || program.offset > file.size() || program.fileSize > file.size() - program.offset ||
             program.address > std::numeric_limits<std::uint64_t>::max() - program.memorySize)
             throw std::runtime_error("Invalid PT_LOAD range in " + path.string());
-        first = std::min(first, AlignDown(program.address, page));
+        first = std::min(first, AlignDown(program.address, mappingAlignment));
         last = std::max(last, AlignUp(program.address + program.memorySize, page));
     }
     if (first == std::numeric_limits<std::uint64_t>::max() || last <= first || last - first > std::numeric_limits<std::size_t>::max())
         throw std::runtime_error("Guest ELF has no usable PT_LOAD image: " + path.string());
     reservationSize = static_cast<std::size_t>(last - first);
-    reservation = mmap(nullptr, reservationSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (reservation == MAP_FAILED) {
+    if (reservationSize > std::numeric_limits<std::size_t>::max() - mappingAlignment)
+        throw std::runtime_error("Guest ELF aligned reservation size overflows: " + path.string());
+    const auto allocationSize = reservationSize + static_cast<std::size_t>(mappingAlignment);
+    void* allocation = mmap(nullptr, allocationSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (allocation == MAP_FAILED) {
         reservation = nullptr;
         throw std::system_error(errno, std::generic_category(), "reserve guest ELF address space");
     }
+    const auto allocationAddress = reinterpret_cast<std::uintptr_t>(allocation);
+    const auto alignedAddress = static_cast<std::uintptr_t>(AlignUp(allocationAddress, mappingAlignment));
+    const auto prefix = static_cast<std::size_t>(alignedAddress - allocationAddress);
+    const auto suffix = allocationSize - prefix - reservationSize;
+    if (prefix != 0) munmap(allocation, prefix);
+    if (suffix != 0) munmap(reinterpret_cast<void*>(alignedAddress + reservationSize), suffix);
+    reservation = reinterpret_cast<void*>(alignedAddress);
     mappedBegin = reinterpret_cast<std::uintptr_t>(reservation);
     mappedEnd = mappedBegin + reservationSize;
     slide = mappedBegin - first;
@@ -459,6 +503,18 @@ std::optional<TlsSymbol> ElfImage::FindTlsExport(const std::string& name) const 
 }
 
 bool ElfImage::Contains(std::uintptr_t address) const { return address >= mappedBegin && address < mappedEnd; }
+
+const void* ElfImage::ProcessParameters() const {
+    const void* result = nullptr;
+    for (const auto& program : programs) {
+        if (program.type != ProgramProcessParameters) continue;
+        if (result != nullptr || program.fileSize < 0x40 || !InImage(program.address, program.fileSize))
+            throw std::runtime_error("Invalid guest process parameters in " + path.string());
+        result = reinterpret_cast<const void*>(slide + program.address);
+    }
+    if (!result) throw std::runtime_error("Guest process parameters are missing from " + path.string());
+    return result;
+}
 
 bool ElfImage::InImage(std::uint64_t address, std::uint64_t bytes) const {
     if (address > std::numeric_limits<std::uintptr_t>::max() - slide) return false;
@@ -855,6 +911,31 @@ bool Runtime::ModuleInfo(std::uintptr_t address, ModuleInfoEx& info) const {
         if (image->FillModuleInfo(address, guestIds.at(image.get()), info)) return true;
     }
     return false;
+}
+
+const void* Runtime::ProcessParameters() const {
+    std::lock_guard lock(mutex);
+    const auto found = guests.find(executable);
+    if (found == guests.end()) throw std::runtime_error("The main guest image has not been loaded");
+    return found->second->ProcessParameters();
+}
+
+bool Runtime::VisitMainImageSegments(GuestSegmentVisitor visitor, void* context) const {
+    std::lock_guard lock(mutex);
+    const auto found = guests.find(executable);
+    if (found == guests.end()) throw std::runtime_error("The main guest image has not been loaded");
+    const auto& image = *found->second;
+    bool visited = false;
+    for (const auto& program : image.ProgramHeaders()) {
+        if (program.type != ProgramLoad || program.memorySize == 0) continue;
+        visited = true;
+        if (TraceLoader())
+            std::cerr << "Guest main segment: " << reinterpret_cast<const void*>(image.Slide() + program.address)
+                      << "+0x" << std::hex << program.memorySize << std::dec << " flags=" << program.flags << '\n';
+        if (!visitor(image.Slide() + program.address, static_cast<std::size_t>(program.memorySize),
+                     (program.flags & 6) != 0, (program.flags & 2) != 0, context)) return false;
+    }
+    return visited;
 }
 
 }

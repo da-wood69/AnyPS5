@@ -8,6 +8,7 @@ namespace ShaderRecompiler {
 
 struct MaskedSelectEliminationStats {
     std::uint32_t removedSelects = 0;
+    std::uint32_t foldedFullMasks = 0;
 };
 
 class MaskedSelectEliminator {

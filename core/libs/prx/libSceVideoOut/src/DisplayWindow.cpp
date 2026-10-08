@@ -1,4 +1,5 @@
 #include "prx/libSceVideoOut/include/DisplayWindow.hpp"
+#include "prx/libSceVideoOut/include/MainThread.hpp"
 #include "prx/libSceAgcDriver/Execution/include/AspectFit.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver.hpp"
 #include "prx/libkernel/AppMetadata/include/AppMetadata.hpp"
@@ -37,21 +38,23 @@ void DisplayWindow::Ensure(std::uint32_t sourceWidth, std::uint32_t sourceHeight
 }
 
 void DisplayWindow::create(std::uint32_t sourceWidth, std::uint32_t sourceHeight) {
-    SDL_Rect usable{};
-    require(SDL_GetDisplayUsableBounds(0, &usable) == 0, SDL_GetError());
-    require(DisplayWindowInitialSizePercent > 0 && DisplayWindowInitialSizePercent <= 100, "initial window size percent must be between 1 and 100");
-    require(usable.w > 0 && usable.h > 0, "usable display extent must be positive");
-    const auto boundsWidth = static_cast<std::uint32_t>(static_cast<std::uint64_t>(usable.w) * DisplayWindowInitialSizePercent / 100);
-    const auto boundsHeight = static_cast<std::uint32_t>(static_cast<std::uint64_t>(usable.h) * DisplayWindowInitialSizePercent / 100);
-    const auto initialSize = AgcDriver::ComputeContainSize_nid_postfix(sourceWidth, sourceHeight, boundsWidth, boundsHeight, true);
-    require(initialSize.width >= DisplayWindowMinimumWidth && initialSize.height >= DisplayWindowMinimumHeight, "initial window extent is smaller than the minimum");
-    const auto title = GetAppTitle_nid_postfix();
-    AgcDriverLockVulkanLoader_nid_postfix();
-    window = SDL_CreateWindow(title.value, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, static_cast<int>(initialSize.width), static_cast<int>(initialSize.height), SDL_WINDOW_SHOWN | SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
-    AgcDriverUnlockVulkanLoader_nid_postfix();
-    require(window != nullptr, SDL_GetError());
-    SDL_SetWindowMinimumSize(window, static_cast<int>(DisplayWindowMinimumWidth), static_cast<int>(DisplayWindowMinimumHeight));
-    installSubclass();
+    VideoOutPlatform::RunOnMainThread([&] {
+        SDL_Rect usable{};
+        require(SDL_GetDisplayUsableBounds(0, &usable) == 0, SDL_GetError());
+        require(DisplayWindowInitialSizePercent > 0 && DisplayWindowInitialSizePercent <= 100, "initial window size percent must be between 1 and 100");
+        require(usable.w > 0 && usable.h > 0, "usable display extent must be positive");
+        const auto boundsWidth = static_cast<std::uint32_t>(static_cast<std::uint64_t>(usable.w) * DisplayWindowInitialSizePercent / 100);
+        const auto boundsHeight = static_cast<std::uint32_t>(static_cast<std::uint64_t>(usable.h) * DisplayWindowInitialSizePercent / 100);
+        const auto initialSize = AgcDriver::ComputeContainSize_nid_postfix(sourceWidth, sourceHeight, boundsWidth, boundsHeight, true);
+        require(initialSize.width >= DisplayWindowMinimumWidth && initialSize.height >= DisplayWindowMinimumHeight, "initial window extent is smaller than the minimum");
+        const auto title = GetAppTitle_nid_postfix();
+        AgcDriverLockVulkanLoader_nid_postfix();
+        window = SDL_CreateWindow(title.value, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, static_cast<int>(initialSize.width), static_cast<int>(initialSize.height), SDL_WINDOW_SHOWN | SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+        AgcDriverUnlockVulkanLoader_nid_postfix();
+        require(window != nullptr, SDL_GetError());
+        SDL_SetWindowMinimumSize(window, static_cast<int>(DisplayWindowMinimumWidth), static_cast<int>(DisplayWindowMinimumHeight));
+        installSubclass();
+    });
 }
 
 void DisplayWindow::updateAspectRatio(std::uint32_t sourceWidth, std::uint32_t sourceHeight) {
@@ -61,8 +64,10 @@ void DisplayWindow::updateAspectRatio(std::uint32_t sourceWidth, std::uint32_t s
 
 void DisplayWindow::Destroy() noexcept {
     if (window == nullptr) return;
-    removeSubclass();
-    SDL_DestroyWindow(window);
+    VideoOutPlatform::RunOnMainThread([&] {
+        removeSubclass();
+        SDL_DestroyWindow(window);
+    });
     window = nullptr;
 }
 
@@ -72,8 +77,10 @@ SDL_Window* DisplayWindow::Handle() const {
 
 void DisplayWindow::ToggleFullscreen() {
     require(window != nullptr, "window must exist before toggling fullscreen");
-    const auto flags = (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0 ? 0u : static_cast<Uint32>(SDL_WINDOW_FULLSCREEN_DESKTOP);
-    require(SDL_SetWindowFullscreen(window, flags) == 0, SDL_GetError());
+    VideoOutPlatform::RunOnMainThread([&] {
+        const auto flags = (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0 ? 0u : static_cast<Uint32>(SDL_WINDOW_FULLSCREEN_DESKTOP);
+        require(SDL_SetWindowFullscreen(window, flags) == 0, SDL_GetError());
+    });
 }
 
 void DisplayWindow::DrawableSize(std::uint32_t& width, std::uint32_t& height) const {
@@ -84,7 +91,7 @@ void DisplayWindow::DrawableSize(std::uint32_t& width, std::uint32_t& height) co
     }
     int drawableWidth = 0;
     int drawableHeight = 0;
-    SDL_Vulkan_GetDrawableSize(window, &drawableWidth, &drawableHeight);
+    VideoOutPlatform::RunOnMainThread([&] { SDL_Vulkan_GetDrawableSize(window, &drawableWidth, &drawableHeight); });
     width = drawableWidth > 0 ? static_cast<std::uint32_t>(drawableWidth) : 0;
     height = drawableHeight > 0 ? static_cast<std::uint32_t>(drawableHeight) : 0;
 }
@@ -107,7 +114,7 @@ void DisplayWindow::UpdateTitle() {
     }
     char text[160];
     std::snprintf(text, sizeof(text), "%s | FPS: %.2f (%llu)", title.value, currentFps, static_cast<unsigned long long>(frameNum));
-    SDL_SetWindowTitle(window, text);
+    VideoOutPlatform::RunOnMainThread([&] { SDL_SetWindowTitle(window, text); });
 }
 
 void DisplayWindow::installSubclass() {

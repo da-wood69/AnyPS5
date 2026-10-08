@@ -11,6 +11,8 @@
 #include <windows.h>
 #elif defined(__linux__)
 #include "prx/libc/include/specifics/linux/ElfTypes.hpp"
+#elif defined(__APPLE__)
+#include <dlfcn.h>
 #endif
 
 const void* ApplicationProcessParameters_nid_no_patch() {
@@ -68,6 +70,13 @@ const void* ApplicationProcessParameters_nid_no_patch() {
     }, &search);
     if (search.invalid || search.parameters == nullptr) throw std::runtime_error("application heap: invalid or missing process parameters");
     return search.parameters;
+#elif defined(__APPLE__)
+    using GuestProcessParameters = const void* (*)();
+    const auto callback = reinterpret_cast<GuestProcessParameters>(dlsym(RTLD_DEFAULT, "AnyPs5GuestProcessParameters"));
+    if (callback == nullptr) throw std::runtime_error("application heap: macOS guest runtime is unavailable");
+    const void* result = callback();
+    if (result == nullptr) throw std::runtime_error("application heap: invalid or missing process parameters");
+    return result;
 #else
     throw std::runtime_error("application heap: unsupported executable format");
 #endif

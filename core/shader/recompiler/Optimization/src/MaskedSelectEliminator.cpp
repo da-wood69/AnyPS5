@@ -1,4 +1,5 @@
 #include "Optimization/MaskedSelectEliminator.hpp"
+#include "IntermediateRepresentation/IrBuilder.hpp"
 #include "Optimization/DeadCodeEliminator.hpp"
 #include "RdnaDecoder/RdnaInstruction.hpp"
 #include <optional>
@@ -364,6 +365,16 @@ bool unobservedWhereMasked(const IrProgram& program, const std::unordered_set<co
 
 MaskedSelectEliminationStats MaskedSelectEliminator::Eliminate(IrProgram& program) const {
     MaskedSelectEliminationStats stats;
+    IrBuilder builder(program);
+    IrValue& fullMask = builder.ConstantBool(true);
+    for (IrBlock* block : program.BlockOrder()) {
+        for (IrValue* inst : block->Instructions()) {
+            if (inst->Type() != IrType::Bool || !inst->HasUses() || !alwaysTrue(inst, program.WaveSize())) continue;
+            inst->ReplaceAllUsesWith(&fullMask);
+            ++stats.foldedFullMasks;
+        }
+    }
+    if (stats.foldedFullMasks != 0u) DeadCodeEliminator{}.Eliminate(program);
     const auto once = blocksOutsideLoops(program);
     bool changed = true;
     while (changed) {

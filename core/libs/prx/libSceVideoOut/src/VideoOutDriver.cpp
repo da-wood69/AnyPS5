@@ -12,6 +12,7 @@
 #include "prx/libSceVideoOut/include/PadInput.hpp"
 #include "prx/libSceVideoOut/include/MouseInput.hpp"
 #include "prx/libSceVideoOut/include/KeyboardInput.hpp"
+#include "prx/libSceVideoOut/include/MainThread.hpp"
 #include "prx/libScePad/include/PadState.hpp"
 #include "prx/libkernel/Equeue/Equeue.hpp"
 #include "prx/libkernel/Time/include/Time.hpp"
@@ -200,7 +201,9 @@ VideoOutDriver& VideoOutDriver::Get() {
 
 VideoOutDriver::VideoOutDriver() {
     SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
-    if (SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0) {
+    int initialization = 0;
+    VideoOutPlatform::RunOnMainThread([&] { initialization = SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER); });
+    if (initialization < 0) {
         throw std::runtime_error(std::string("SDL_InitSubSystem(VIDEO | GAMECONTROLLER) failed: ") + SDL_GetError());
     }
     try {
@@ -399,25 +402,33 @@ void VideoOutDriver::processFlip(FlipRequest& req) {
     require(req.width != 0 && req.height != 0 && req.width <= static_cast<uint32_t>(std::numeric_limits<int>::max()) && req.height <= static_cast<uint32_t>(std::numeric_limits<int>::max()), "invalid window dimensions");
     window.Ensure(req.width, req.height);
     unsigned extensionCount = 0;
-    if (!SDL_Vulkan_GetInstanceExtensions(window.Handle(), &extensionCount, nullptr)) throw std::runtime_error(std::string("SDL_Vulkan_GetInstanceExtensions failed: ") + SDL_GetError());
+    VideoOutPlatform::RunOnMainThread([&] {
+        if (!SDL_Vulkan_GetInstanceExtensions(window.Handle(), &extensionCount, nullptr)) throw std::runtime_error(std::string("SDL_Vulkan_GetInstanceExtensions failed: ") + SDL_GetError());
+    });
     std::vector<const char*> extensions(extensionCount);
-    if (!SDL_Vulkan_GetInstanceExtensions(window.Handle(), &extensionCount, extensions.data())) throw std::runtime_error(std::string("SDL_Vulkan_GetInstanceExtensions failed: ") + SDL_GetError());
+    VideoOutPlatform::RunOnMainThread([&] {
+        if (!SDL_Vulkan_GetInstanceExtensions(window.Handle(), &extensionCount, extensions.data())) throw std::runtime_error(std::string("SDL_Vulkan_GetInstanceExtensions failed: ") + SDL_GetError());
+    });
     extensions.resize(extensionCount);
     const AgcDriver::PresentationWindow target{window.Handle(), extensions, [](void* context, VkInstance instance) {
         VkSurfaceKHR surface = VK_NULL_HANDLE;
-        if (!SDL_Vulkan_CreateSurface(static_cast<SDL_Window*>(context), instance, &surface)) throw std::runtime_error(std::string("SDL_Vulkan_CreateSurface failed: ") + SDL_GetError());
+        VideoOutPlatform::RunOnMainThread([&] {
+            if (!SDL_Vulkan_CreateSurface(static_cast<SDL_Window*>(context), instance, &surface)) throw std::runtime_error(std::string("SDL_Vulkan_CreateSurface failed: ") + SDL_GetError());
+        });
         return surface;
     }, [](void* context, std::uint32_t* width, std::uint32_t* height) {
-        if ((SDL_GetWindowFlags(static_cast<SDL_Window*>(context)) & SDL_WINDOW_MINIMIZED) != 0) {
-            *width = 0;
-            *height = 0;
-            return;
-        }
-        int drawableWidth = 0;
-        int drawableHeight = 0;
-        SDL_Vulkan_GetDrawableSize(static_cast<SDL_Window*>(context), &drawableWidth, &drawableHeight);
-        *width = drawableWidth > 0 ? static_cast<std::uint32_t>(drawableWidth) : 0;
-        *height = drawableHeight > 0 ? static_cast<std::uint32_t>(drawableHeight) : 0;
+        VideoOutPlatform::RunOnMainThread([&] {
+            if ((SDL_GetWindowFlags(static_cast<SDL_Window*>(context)) & SDL_WINDOW_MINIMIZED) != 0) {
+                *width = 0;
+                *height = 0;
+                return;
+            }
+            int drawableWidth = 0;
+            int drawableHeight = 0;
+            SDL_Vulkan_GetDrawableSize(static_cast<SDL_Window*>(context), &drawableWidth, &drawableHeight);
+            *width = drawableWidth > 0 ? static_cast<std::uint32_t>(drawableWidth) : 0;
+            *height = drawableHeight > 0 ? static_cast<std::uint32_t>(drawableHeight) : 0;
+        });
     }, req.width, req.height, req.timing};
     timing.Mark("window_prepare");
     const auto gpuReady = [](void* context) {
@@ -480,8 +491,12 @@ void VideoOutDriver::presentLoop(std::stop_token token) {
                 }
             }
 
-            SDL_Event event;
-            while (SDL_PollEvent(&event)) {
+            std::vector<SDL_Event> events;
+            VideoOutPlatform::RunOnMainThread([&] {
+                SDL_Event event;
+                while (SDL_PollEvent(&event)) events.push_back(event);
+            });
+            for (const auto& event : events) {
                 if (event.type == SDL_QUIT) {
                     LibcRequestExit_nid_postfix(0);
                     throw ProcessShutdown{};

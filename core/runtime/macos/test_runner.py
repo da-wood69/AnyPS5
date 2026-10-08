@@ -48,6 +48,40 @@ def import_fixture():
     return image
 
 
+def process_parameters_fixture():
+    image = dynamic_fixture()
+    struct.pack_into("<Q", image, 64 + 48, 0x4000)
+    struct.pack_into("<H", image, 56, 6)
+    struct.pack_into("<IIQQQQQQ", image, 64 + 2 * 56,
+                     0x61000001, 4, 0x900, 0x900, 0x900, 0x40, 0x40, 8)
+    for index in range(3, 6):
+        struct.pack_into("<IIQQQQQQ", image, 64 + index * 56,
+                         0x6FFFFF01, 0, 0, 0, 0, 0, 0, 1)
+    strings = b"\0AnyPs5GuestProcessParameters\0"
+    image[0x600:0x600 + len(strings)] = strings
+    struct.pack_into("<IBBHQQ", image, 0x620 + 24, 1, 0x12, 0, 0, 0, 0)
+    struct.pack_into("<QQq", image, 0x700, 0x300, (1 << 32) | 6, 0)
+    tags = [(5, 0x600), (10, len(strings)), (6, 0x620), (11, 24),
+            (7, 0x700), (8, 24), (9, 24), (0, 0)]
+    for index, tag in enumerate(tags):
+        struct.pack_into("<qQ", image, 0x400 + index * 16, *tag)
+    struct.pack_into("<QQ", image, 120 + 32, len(tags) * 16, len(tags) * 16)
+    struct.pack_into("<QI", image, 0x900, 0x40, 0x4942524F)
+    code = bytearray(bytes.fromhex(
+        "ff15fa000000"
+        "4885c0" "7400"
+        "48833840" "7500"
+        "8178084f524249" "7500"
+        "89c1" "81e1ff3f0000" "81f900090000" "7500"
+        "cc"))
+    failure = len(code)
+    code.extend(bytes.fromhex("0f0b"))
+    for branch in (9, 15, 24, 40):
+        code[branch + 1] = failure - (branch + 2)
+    image[0x200:0x200 + len(code)] = code
+    return image
+
+
 def direct_tls_fixture():
     image = argv_fixture()
     struct.pack_into("<H", image, 56, 6)
@@ -230,6 +264,14 @@ def main():
         assert converted.returncode == 0, (converted.stdout, converted.stderr)
         tls = subprocess.run([str(runner), str(tls_output)], capture_output=True, timeout=20)
         assert tls.returncode == -signal.SIGTRAP, (tls.returncode, tls.stdout, tls.stderr)
+        source.write_bytes(process_parameters_fixture())
+        parameters_output = root / "parameters.elf"
+        converted = subprocess.run(
+            [str(relinker), "--macos", "--skip-sce-module", str(source), str(parameters_output)],
+            capture_output=True, text=True, timeout=30)
+        assert converted.returncode == 0, (converted.stdout, converted.stderr)
+        parameters = subprocess.run([str(runner), str(parameters_output)], capture_output=True, timeout=20)
+        assert parameters.returncode == -signal.SIGTRAP, (parameters.returncode, parameters.stdout, parameters.stderr)
         source.write_bytes(import_fixture())
         imported_output = root / "imported.elf"
         converted = subprocess.run(

@@ -234,6 +234,15 @@ int main() {
         return b.eliminate() != 0u && removed(written);
     });
 
+    passed &= run("the full wave's exec must fold without a select", [] {
+        Builder b;
+        auto& full = b.threadBit(b.constant(0xffffffffu), b.constant(0xffffffffu));
+        auto& sink = b.emit(IrOpcode::Reference, IrType::Void, {&full});
+        const auto stats = MaskedSelectEliminator{}.Eliminate(b.program);
+        const auto* value = sink.Argument(0)->Resolve();
+        return stats.foldedFullMasks != 0u && value != nullptr && value->HasImmediate() && value->ImmediateBool();
+    });
+
     passed &= run("a partial wave's exec is not the full wave", [] {
         Builder b;
         auto& partial = b.threadBit(b.constant(0xffffffffu), b.constant(0x0000ffffu));

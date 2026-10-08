@@ -1299,7 +1299,20 @@ bool StorageTexture::Refresh() {
         for (std::uint32_t layer = 0; layer < trackedLayers; ++layer) {
             if (changed[layer] && layerPending[layer]) pendingChanged = true;
         }
-        if (!unchanged && !keysChanged && !pendingChanged && originalValid && equalsOriginal()) {
+        // macOS has no kernel write-watch equivalent to Windows GetWriteWatch or Linux
+        // userfaultfd/PAGEMAP_SCAN. Keep pending render-target results resident unless DCC metadata
+        // changed; otherwise every use performs a full write-back and re-upload, even when the CPU
+        // never touched the target. APS5_STRICT_UNTRACKED=1 keeps the conservative path for titles
+        // which mix CPU stores into live render targets.
+#ifdef __APPLE__
+        const bool trustUntrackedPending = current == 0 && std::getenv("APS5_STRICT_UNTRACKED") == nullptr;
+#else
+        constexpr bool trustUntrackedPending = false;
+#endif
+        if (!unchanged && !keysChanged && trustUntrackedPending && pendingChanged) {
+            unchanged = true;
+            stamped = false;
+        } else if (!unchanged && !keysChanged && !pendingChanged && originalValid && equalsOriginal()) {
             unchanged = true;
             stamped = false;
         }

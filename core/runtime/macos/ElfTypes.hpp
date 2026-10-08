@@ -62,6 +62,7 @@ struct Relocation { std::uint64_t offset; std::uint64_t info; std::int64_t adden
 inline constexpr std::uint32_t ProgramLoad = 1;
 inline constexpr std::uint32_t ProgramDynamic = 2;
 inline constexpr std::uint32_t ProgramTls = 7;
+inline constexpr std::uint32_t ProgramProcessParameters = 0x61000001;
 inline constexpr std::uint32_t ProgramGnuEhFrame = 0x6474e550;
 inline constexpr std::uint32_t SectionDynamicSymbols = 11;
 inline constexpr std::int64_t DynamicNull = 0;
