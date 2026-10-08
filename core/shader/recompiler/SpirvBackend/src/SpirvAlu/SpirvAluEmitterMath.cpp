@@ -194,7 +194,12 @@ std::uint32_t EmitDppWriteCondition(SpirvValueEmitContext& ctx, const IrValue& i
         state.module.AddFunction(spv::OpLogicalAnd, TypeBool(state), bounded, writable, target.valid);
         writable = bounded;
         if (!flags.fetchInactive && (flags.control & DppMoveFlags::Lanes8) == 0u) {
-            const auto sourceActive = EmitBallotLaneActiveBool(state, ctx.Ballot(inst.Argument(2)), target.lane);
+            auto lane = target.lane;
+            if (state.laneCount == 2u) {
+                lane = Binary(state, spv::OpBitwiseAnd, TypeU32(state), lane, ConstantU32(state, 31u));
+            }
+            const auto sourceActive = state.module.AllocateId();
+            state.module.AddFunction(spv::OpGroupNonUniformShuffle, TypeBool(state), sourceActive, ConstantU32(state, spv::ScopeSubgroup), ctx.Arg(inst, 2), EmitHostSubgroupLane(state, lane));
             writable = Binary(state, spv::OpLogicalAnd, TypeBool(state), writable, sourceActive);
         }
     }
@@ -508,8 +513,12 @@ std::uint32_t EmitDppMoveU32(SpirvValueEmitContext& ctx, const IrValue& inst) {
     if (flags.fetchInactive) {
         return EmitNative<spv::OpSelect, IrType::U32>(state, target.valid, shuffled, ConstantU32(state, 0u));
     }
-    const auto ballot = ctx.Ballot(inst.Argument(1));
-    const auto sourceActive = EmitBallotLaneActiveBool(state, ballot, target.lane);
+    auto lane = target.lane;
+    if (state.laneCount == 2u) {
+        lane = Binary(state, spv::OpBitwiseAnd, TypeU32(state), lane, ConstantU32(state, 31u));
+    }
+    const auto sourceActive = state.module.AllocateId();
+    state.module.AddFunction(spv::OpGroupNonUniformShuffle, TypeBool(state), sourceActive, ConstantU32(state, spv::ScopeSubgroup), ctx.Arg(inst, 1), EmitHostSubgroupLane(state, lane));
     const auto canFetch = state.module.AllocateId();
     state.module.AddFunction(spv::OpLogicalAnd, TypeBool(state), canFetch, target.valid, sourceActive);
     return EmitNative<spv::OpSelect, IrType::U32>(state, canFetch, shuffled, ConstantU32(state, 0u));
