@@ -234,8 +234,19 @@ std::uint32_t IrProgram::WaveSize() const {
     return waveSize;
 }
 
+IrValue& IrProgram::HostExecWord(std::uint32_t half) const {
+    if (half >= hostExecMask.size() || hostExecMask[half] == nullptr) {
+        throw std::runtime_error("IrProgram::HostExecWord has not been initialized");
+    }
+    return *hostExecMask[half];
+}
+
 void IrProgram::SetWaveSize(std::uint32_t waveSize) {
     this->waveSize = waveSize;
+}
+
+void IrProgram::SetHostExecMask(IrValue& low, IrValue& high) {
+    hostExecMask = {&low, &high};
 }
 
 IrBlock& IrProgram::CreateBlock() {

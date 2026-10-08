@@ -15,7 +15,7 @@ IrU32 TranslationContext::hostExecWord(std::uint32_t half) {
     if (half != 0u && program.WaveSize() != 64u) {
         return word;
     }
-    return IrU32(ir.BitwiseAnd(word.Value(), ballotMask(IrU1(ir.ConstantBool(true)))[half].Value()));
+    return IrU32(ir.BitwiseAnd(word.Value(), program.HostExecWord(half)));
 }
 
 IrU1 TranslationContext::threadBit(const std::array<IrU32, 2>& mask) {

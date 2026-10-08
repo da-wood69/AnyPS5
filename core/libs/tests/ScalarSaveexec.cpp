@@ -14,6 +14,8 @@ static void Check(std::uint32_t encoding, RdnaOpcode opcode) {
     IrProgram program;
     auto& block = program.CreateBlock();
     program.SetEntryBlock(block);
+    IrBuilder setup(program);
+    program.SetHostExecMask(setup.Constant(0xffffffffu), setup.Constant(0xffffffffu));
     TranslationContext context(program, block, 256);
     context.TranslateInstruction(instruction);
 }

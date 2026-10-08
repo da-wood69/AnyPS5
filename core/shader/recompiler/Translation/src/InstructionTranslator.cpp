@@ -218,8 +218,14 @@ void emitEntryPrologue(IrProgram& program, IrBlock& entryBlock, const TranslateO
     }
     entryIr.SetExec(*initialExec);
     IrValue& initialMask = entryIr.Emit(IrOpcode::Ballot, IrOpcodeType(IrOpcode::Ballot), {initialExec});
-    entryIr.SetExecLo(entryIr.CompositeExtract(initialMask, 0u));
-    entryIr.SetExecHi(options.waveSize == 64u ? entryIr.CompositeExtract(initialMask, 1u) : entryIr.Constant(0u));
+    IrValue& initialExecLo = entryIr.CompositeExtract(initialMask, 0u);
+    IrValue& initialExecHi = options.waveSize == 64u ? entryIr.CompositeExtract(initialMask, 1u) : entryIr.Constant(0u);
+    entryIr.SetExecLo(initialExecLo);
+    entryIr.SetExecHi(initialExecHi);
+    // Keep the entry mask separate from mutable EXEC. A ballot emitted later inside divergent
+    // control flow contains only the currently active invocations, not every host lane available
+    // to this guest wave.
+    program.SetHostExecMask(initialExecLo, initialExecHi);
 
     if (options.stage == ShaderStageKind::Compute) {
         const auto* cs = options.inputInfo.compute;

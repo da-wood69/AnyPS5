@@ -3,6 +3,7 @@
 
 #include "IntermediateRepresentation/IrBlock.hpp"
 #include "IntermediateRepresentation/IrMetadata.hpp"
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -17,8 +18,10 @@ public:
     [[nodiscard]] ShaderInfo& Info();
     [[nodiscard]] const ShaderInfo& Info() const;
     [[nodiscard]] std::uint32_t WaveSize() const;
+    [[nodiscard]] IrValue& HostExecWord(std::uint32_t half) const;
 
     void SetWaveSize(std::uint32_t waveSize);
+    void SetHostExecMask(IrValue& low, IrValue& high);
     [[nodiscard]] IrBlock& CreateBlock();
     [[nodiscard]] IrValue& CreateValue(IrOpcode opcode, IrType type);
 
@@ -39,6 +42,7 @@ private:
     IrResourcePlan resourcePlan;
     IrProgramMetadata metadata;
     IrBlock* entryBlock = nullptr;
+    std::array<IrValue*, 2> hostExecMask{};
     std::uint32_t waveSize = 64;
     std::uint32_t nextValueId = 0;
     std::uint32_t nextBlockId = 0;
