@@ -2,6 +2,7 @@
 #include "prx/libSceAgcDriver/Graphics/include/Draw.hpp"
 #include "Recompiler.hpp"
 #include "VulkanTestDevice.hpp"
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <iostream>
@@ -24,6 +25,7 @@ alignas(256) constexpr std::array<std::uint32_t, 43> ScanCode{
 };
 
 constexpr std::uint32_t Lanes = 64;
+constexpr std::uint32_t Int64AtomicsCapability = 12;
 constexpr std::uint32_t Blocks = 4096;
 
 alignas(256) std::array<std::uint32_t, 4> Counter{};
@@ -104,6 +106,11 @@ int main() {
     try {
         const auto device = OpenVulkanTestDevice();
         if (!device) return VulkanTestSkipped;
+        const auto capabilities = device->Target().supportedCapabilities;
+        if (std::find(capabilities.begin(), capabilities.end(), Int64AtomicsCapability) == capabilities.end()) {
+            std::puts("skipped, the device has no shaderBufferInt64Atomics");
+            return VulkanTestSkipped;
+        }
         if (device->Target().subgroupSize < 32) {
             std::printf("skipped, subgroup size %u cannot hold a wave32\n", device->Target().subgroupSize);
             return VulkanTestSkipped;

@@ -99,39 +99,6 @@ void validateSchedulingPolicy(int policy) {
         throw std::invalid_argument("Unsupported guest scheduling policy");
 }
 
-#ifdef _WIN32
-void syncVolumes() {
-    std::array<wchar_t, 32768> name{};
-    const auto first = FindFirstVolumeW(name.data(), static_cast<DWORD>(name.size()));
-    if (first == INVALID_HANDLE_VALUE)
-        throw std::system_error(GetLastError(), std::system_category(), "Enumerating volumes for sync");
-    const std::unique_ptr<void, decltype(&FindVolumeClose)> search(first, &FindVolumeClose);
-    for (;;) {
-        DWORD flags = 0;
-        if (!GetVolumeInformationW(name.data(), nullptr, 0, nullptr, nullptr, &flags, nullptr, 0))
-            throw std::system_error(GetLastError(), std::system_category(), "Reading volume properties for sync");
-        if ((flags & FILE_READ_ONLY_VOLUME) == 0) {
-            std::wstring path(name.data());
-            if (path.empty() || path.back() != L'\\')
-                throw std::runtime_error("Invalid volume path for sync");
-            path.pop_back();
-            const auto native = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
-            if (native == INVALID_HANDLE_VALUE)
-                throw std::system_error(GetLastError(), std::system_category(), "Opening volume for sync");
-            const std::unique_ptr<void, decltype(&CloseHandle)> volume(native, &CloseHandle);
-            if (!FlushFileBuffers(volume.get()))
-                throw std::system_error(GetLastError(), std::system_category(), "Flushing volume");
-        }
-        if (FindNextVolumeW(search.get(), name.data(), static_cast<DWORD>(name.size())))
-            continue;
-        const auto error = GetLastError();
-        if (error != ERROR_NO_MORE_FILES)
-            throw std::system_error(error, std::system_category(), "Enumerating volumes for sync");
-        break;
-    }
-}
-#endif
-
 }
 
 struct GuestResourceUsage {
@@ -248,11 +215,7 @@ int APS5_VABI sceKernelUuidCreate(std::uint32_t* uuid) {
 }
 
 void APS5_VABI sceKernelSync(void) {
-#ifdef _WIN32
-    syncVolumes();
-#else
-    ::sync();
-#endif
+    SyncWrittenPaths_nid_no_patch();
 }
 
 int APS5_VABI sched_get_priority_max_nid_postfix(int policy) {

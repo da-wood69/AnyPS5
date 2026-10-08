@@ -283,6 +283,7 @@ std::shared_ptr<StorageTexture> sampledStorageSource(const Context& context, con
 // `guestBytes` is the surface size when the caller described the surface already (0: described here).
 std::shared_ptr<Texture> cachedTexture(const Context& context, std::span<const std::uint32_t> words, const GuestTextureResource& resource, VkComponentMapping components, std::uint64_t guestBytes = 0, bool depthCompare = false) {
     CaptureTrace::Log("sampled-lookup address=%llx width=%u height=%u dcc=%llx", static_cast<unsigned long long>(resource.baseAddress), resource.width, resource.height, static_cast<unsigned long long>(resource.dccAddress));
+    if (auto* recorder = Recorder::Active(); recorder != nullptr) recorder->BoundKeptBytes();
     if (auto depth = DepthSurfaceTexture(context, words, resource, components)) return depth;
     const auto depthBitsWidth = words.size() >= 4 ? ShaderRecompiler::DepthBitsTextureWidth(words[1], words[3]) : 0u;
     if (depthBitsWidth == 32u) {
@@ -570,6 +571,7 @@ std::shared_ptr<StorageTexture> cachedStorageTexture(const Context& context, std
     static const bool disabled = std::getenv("APS5_NO_TEXTURE_CACHE") != nullptr;
     if (disabled) return std::make_shared<StorageTexture>(context, *context.detiler, viewed, mip);
     static_cast<void>(words);
+    if (auto* recorder = Recorder::Active(); recorder != nullptr) recorder->BoundKeptBytes();
     const bool profile = LookupOutcomes::Profiled();
     auto start = profile ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     auto& counters = TextureCounts();

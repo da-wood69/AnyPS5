@@ -213,6 +213,7 @@ struct VulkanDevice::State {
     bool samplerAnisotropy = false;
     bool textureCompressionBC = false;
     bool samplerFilterMinmax = false;
+    bool fragmentShaderPixelInterlock = false;
     // VK_KHR_timeline_semaphore enabled: the recorder's unlocked waits are available.
     bool timelineSemaphores = false;
     bool computeWave32 = false;
@@ -524,6 +525,7 @@ struct VulkanDevice::State {
             resourceCache.Clear();
             Graphics::ClearCachedTextures(device);
             Graphics::ClearImageMirrors(device);
+            Graphics::ClearHostImports(device);
             patternBuffers.clear();
             descriptorCache.reset();
             emptyBuffer.reset();
@@ -740,6 +742,9 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window) : state(std::make_u
     std::vector<VkExtensionProperties> availableExtensions(extensionCount);
     check(enumerateDeviceExtensions(selected, nullptr, &extensionCount, availableExtensions.data()), "vkEnumerateDeviceExtensionProperties");
     const auto hasExtension = [&](const char* name) { return std::any_of(availableExtensions.begin(), availableExtensions.end(), [&](const auto& item) { return std::strcmp(item.extensionName, name) == 0; }); };
+    VkPhysicalDeviceDriverProperties driverProperties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+    VkPhysicalDeviceProperties2 driverPropertyQuery{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &driverProperties};
+    state->InstanceFunction<PFN_vkGetPhysicalDeviceProperties2>("vkGetPhysicalDeviceProperties2")(selected, &driverPropertyQuery);
     auto byteFeatures = QueryBdaByteFeatures(selected, state->InstanceFunction<PFN_vkGetPhysicalDeviceFeatures2>("vkGetPhysicalDeviceFeatures2"), availableExtensions);
     auto bdaFeatures = QueryBdaFeatures(selected, state->InstanceFunction<PFN_vkGetPhysicalDeviceFeatures2>("vkGetPhysicalDeviceFeatures2"), availableExtensions);
     require(hasExtension(VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME), "VK_KHR_shader_float_controls is unavailable");
@@ -765,6 +770,14 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window) : state(std::make_u
         state->InstanceFunction<PFN_vkGetPhysicalDeviceFeatures2>("vkGetPhysicalDeviceFeatures2")(selected, &features);
         state->fragmentShaderBarycentric = barycentricFeatures.fragmentShaderBarycentric == VK_TRUE;
     }
+    VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT interlockFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT};
+    if (hasExtension(VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME)) {
+        VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &interlockFeatures};
+        state->InstanceFunction<PFN_vkGetPhysicalDeviceFeatures2>("vkGetPhysicalDeviceFeatures2")(selected, &features);
+        state->fragmentShaderPixelInterlock = interlockFeatures.fragmentShaderPixelInterlock == VK_TRUE && driverProperties.driverID != VK_DRIVER_ID_MOLTENVK;
+    }
+    interlockFeatures = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT};
+    interlockFeatures.fragmentShaderPixelInterlock = VK_TRUE;
     VkPhysicalDeviceShaderClockFeaturesKHR clockFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR};
     if (hasExtension(VK_KHR_SHADER_CLOCK_EXTENSION_NAME)) {
         VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &clockFeatures};
@@ -783,6 +796,11 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window) : state(std::make_u
         state->capabilities.push_back(spv::CapabilityFragmentBarycentricKHR);
         state->spirvExtensions.push_back("SPV_KHR_fragment_shader_barycentric");
     }
+    if (state->fragmentShaderPixelInterlock) {
+        deviceExtensions.push_back(VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME);
+        state->capabilities.push_back(spv::CapabilityFragmentShaderPixelInterlockEXT);
+        state->spirvExtensions.push_back("SPV_EXT_fragment_shader_interlock");
+    }
     if (state->shaderClock) {
         deviceExtensions.push_back(VK_KHR_SHADER_CLOCK_EXTENSION_NAME);
         state->capabilities.push_back(spv::CapabilityShaderClockKHR);
@@ -794,6 +812,7 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window) : state(std::make_u
         state->InstanceFunction<PFN_vkGetPhysicalDeviceFeatures2>("vkGetPhysicalDeviceFeatures2")(selected, &features);
     }
     const bool bufferInt64Atomics = atomicInt64Features.shaderBufferInt64Atomics == VK_TRUE;
+    if (bufferInt64Atomics) state->capabilities.push_back(spv::CapabilityInt64Atomics);
     atomicInt64Features = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES_KHR};
     atomicInt64Features.shaderBufferInt64Atomics = VK_TRUE;
     if (bufferInt64Atomics) deviceExtensions.push_back(VK_KHR_SHADER_ATOMIC_INT64_EXTENSION_NAME);
@@ -841,7 +860,7 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window) : state(std::make_u
     // Guest memory is host memory: importing it lets address-based shaders use it in place instead of
     // copying every registered allocation per draw.
     if (hasExtension(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME) && std::getenv("APS5_NO_HOST_IMPORT") == nullptr) {
-        VkPhysicalDeviceExternalMemoryHostPropertiesEXT hostProperties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
+        VkPhysicalDeviceExternalMemoryHostPropertiesEXT hostProperties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT, &driverProperties};
         VkPhysicalDeviceProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &hostProperties};
         state->InstanceFunction<PFN_vkGetPhysicalDeviceProperties2>("vkGetPhysicalDeviceProperties2")(selected, &properties);
         state->hostImportAlignment = hostProperties.minImportedHostPointerAlignment;
@@ -854,7 +873,7 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window) : state(std::make_u
 #endif
         deviceExtensions.push_back(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
 #ifndef _WIN32
-        state->dmaBufImport = hasExtension(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) && hasExtension(VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
+        state->dmaBufImport = driverProperties.driverID != VK_DRIVER_ID_NVIDIA_PROPRIETARY && hasExtension(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) && hasExtension(VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
         if (state->dmaBufImport) {
             deviceExtensions.push_back(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
             deviceExtensions.push_back(VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
@@ -1008,6 +1027,10 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window) : state(std::make_u
         barycentricFeatures.pNext = byteFeatures.pNext;
         byteFeatures.pNext = &barycentricFeatures;
     }
+    if (state->fragmentShaderPixelInterlock) {
+        interlockFeatures.pNext = byteFeatures.pNext;
+        byteFeatures.pNext = &interlockFeatures;
+    }
     if (state->shaderClock) {
         clockFeatures.pNext = byteFeatures.pNext;
         byteFeatures.pNext = &clockFeatures;
@@ -1039,7 +1062,7 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window) : state(std::make_u
         state->timelineSemaphores = timelineFeatures.timelineSemaphore == VK_TRUE;
     }
     VkPhysicalDeviceSubgroupSizeControlFeaturesEXT subgroupSizeFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES_EXT};
-    if (hasExtension(VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME) && state->subgroup.subgroupSize > 32u) {
+    if (hasExtension(VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME) && state->subgroup.subgroupSize >= 32u) {
         VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &subgroupSizeFeatures};
         state->InstanceFunction<PFN_vkGetPhysicalDeviceFeatures2>("vkGetPhysicalDeviceFeatures2")(selected, &features);
         VkPhysicalDeviceSubgroupSizeControlPropertiesEXT subgroupSize{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES_EXT};
@@ -1092,6 +1115,11 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window) : state(std::make_u
     poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     poolInfo.queueFamilyIndex = family;
     check(state->DeviceFunction<PFN_vkCreateCommandPool>("vkCreateCommandPool")(state->device, &poolInfo, nullptr, &state->pool), "vkCreateCommandPool");
+    static const bool procTable = std::getenv("APS5_NO_PROC_TABLE") == nullptr;
+    if (procTable) {
+        Graphics::FillDeviceFunctions(graphicsContext(), state->deviceFunctions);
+        state->functionsReady = true;
+    }
     Graphics::PrepareImportWatch(graphicsContext());
     state->bufferPool = std::make_shared<Graphics::BufferPool>(graphicsContext());
     state->emptyBuffer = std::make_unique<Graphics::Buffer>(graphicsContext(), Graphics::EmptyBufferBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
@@ -1103,14 +1131,6 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window) : state(std::make_u
     state->samplerCache = std::make_unique<Graphics::SamplerCache>();
     state->recorder = std::make_unique<Graphics::Recorder>(graphicsContext(), state->timelineSemaphores);
     state->recorder->Activate();
-    // The entry points every record site uses, resolved once (APS5_NO_PROC_TABLE=1: per call, as
-    // before), and the context copy graphicsContext() hands out from here on: built after the
-    // recorder and the descriptor cache exist, so it carries them.
-    static const bool procTable = std::getenv("APS5_NO_PROC_TABLE") == nullptr;
-    if (procTable) {
-        Graphics::FillDeviceFunctions(graphicsContext(), state->deviceFunctions);
-        state->functionsReady = true;
-    }
     state->context = buildContext();
     state->contextReady = true;
     if (window != nullptr) {

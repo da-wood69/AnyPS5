@@ -103,6 +103,19 @@ bool Driver::copySegment(Submission& submission, const std::uint32_t* guest, std
     return false;
 }
 
+void Driver::readRegisterLists(Submission& submission) {
+    submission.registerLists.clear();
+    for (std::size_t cursor = 0; cursor < submission.commands.size(); cursor += Pm4::PacketWords(submission.commands[cursor])) {
+        const auto header = submission.commands[cursor];
+        if ((header >> 30u) != 3u || !Pm4::IndirectRegisterOpcode((header >> 8u) & 0xffu)) continue;
+        try {
+            submission.registerLists.emplace(cursor, Pm4::ReadIndirectRegisters(std::span<const std::uint32_t>(submission.commands).subspan(cursor, Pm4::PacketWords(header))));
+        } catch (const std::exception& error) {
+            throw std::runtime_error("AGC driver: " + Pm4::Name(header) + " at DWORD " + std::to_string(cursor) + ": " + error.what());
+        }
+    }
+}
+
 void Driver::waitForFlipRoom(const Submission& submission) {
     for (std::size_t cursor = 0; cursor < submission.commands.size(); cursor += Pm4::PacketWords(submission.commands[cursor])) {
         if (submission.commands[cursor] != FlipPacketHeader) continue;
@@ -159,6 +172,7 @@ void Driver::executeRewindTail(const Submission& stalled) {
     tail.queue = stalled.queue;
     copyCommands(tail, stalled.rewindTail, stalled.rewindWords);
     validate(tail, stalled.rewindTail);
+    readRegisterLists(tail);
     waitForFlipRoom(tail);
     {
         std::lock_guard lock(mutex);
@@ -190,6 +204,7 @@ void Driver::Submit(const Packet* packet, std::uint32_t queue) {
     }
     const auto copied = profile ? std::chrono::steady_clock::now() : start;
     validate(submission, descriptor.addr);
+    readRegisterLists(submission);
     waitForFlipRoom(submission);
     static const bool trace = std::getenv("APS5_TRACE_GPU") != nullptr;
     if (trace) std::fprintf(stderr, "[gpu] %.1f submit queue=0x%x dwords=%zu at %p\n", TraceMs(), queue, submission.commands.size(), static_cast<const void*>(descriptor.addr));

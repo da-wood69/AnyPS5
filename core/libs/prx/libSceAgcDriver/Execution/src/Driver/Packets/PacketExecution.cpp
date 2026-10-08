@@ -294,7 +294,8 @@ void Driver::execute(const Submission& submission) {
             dumpSampleCounters(packet[2] | (static_cast<std::uint64_t>(packet[3]) << 32u));
         } else if (opcode != 0x42 && opcode != 0x46 && opcode != 0x58) {
             if (!wroteOnGpu) {
-                Pm4::Execute(packet, queue);
+                if (Pm4::IndirectRegisterOpcode(opcode)) Pm4::ExecuteIndirectRegisters(packet, submission.registerLists.at(cursor), queue);
+                else Pm4::Execute(packet, queue);
                 if (opcode == 0x49 || opcode == 0x37) {
                     if (const auto label = Pm4::DecodeLabelWrite(packet)) noteLabelStore(label->address, label->Bytes(), ++eventSerial);
                 }

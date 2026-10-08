@@ -95,6 +95,7 @@ int ScanGuest(const char* buffer, const char* format, bool secure, NextPointer n
             if (*probe == '\0') return finish(converted ? assigned : EOF);
         }
         const bool sized = secure && (conversion == 's' || conversion == 'c' || conversion == '[');
+        bool capped = false;
         std::string directive = "%";
         void* target = nullptr;
         if (suppress) directive += '*';
@@ -107,6 +108,7 @@ int ScanGuest(const char* buffer, const char* format, bool secure, NextPointer n
                 if (capacity != 0) static_cast<char*>(target)[0] = '\0';
                 return finish(assigned);
             }
+            capped = wanted == 0 || wanted > limit;
             width = wanted == 0 ? limit : std::min(wanted, limit);
         }
         if (width != 0) directive += std::to_string(width);
@@ -116,7 +118,7 @@ int ScanGuest(const char* buffer, const char* format, bool secure, NextPointer n
         int consumed = -1;
         const int matched = suppress ? std::sscanf(input, directive.c_str(), &consumed) : std::sscanf(input, directive.c_str(), target, &consumed);
         if (consumed < 0 || (!suppress && matched != 1)) return finish(!converted && *input == '\0' ? EOF : assigned);
-        if (sized && !suppress && conversion != 'c') {
+        if (capped && conversion != 'c') {
             const char next = input[consumed];
             bool overflow = false;
             if (conversion == 's') overflow = next != '\0' && !std::isspace(static_cast<unsigned char>(next));

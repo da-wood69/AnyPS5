@@ -68,6 +68,7 @@ private:
     static bool& onWorkerThread();
     static void copyCommands(Submission& submission, const std::uint32_t* guest, std::size_t words);
     static bool copySegment(Submission& submission, const std::uint32_t* guest, std::size_t words, std::size_t& budget);
+    static void readRegisterLists(Submission& submission);
     void waitForFlipRoom(const Submission& submission);
     void reserveOutputs(Submission& submission);
     void executeRewindTail(const Submission& stalled);

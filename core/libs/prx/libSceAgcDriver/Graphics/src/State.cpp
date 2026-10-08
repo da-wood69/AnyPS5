@@ -64,7 +64,8 @@ constexpr std::uint32_t LayerExports = (1u << 18u) | (1u << 19u) | (1u << 21u) |
 constexpr std::uint32_t DepthControlMask = ~0x007007f0u;
 // EXEC_ON_HIER_FAIL / EXEC_ON_NOOP / EXEC_IF_OVERLAPPED (bits 9, 10, 17) only force the pixel shader
 // to run, which it always does here.
-constexpr std::uint32_t ShaderControlMask = ~(0x0000f870u | 0x00020600u);
+constexpr std::uint32_t ShaderControlMask = ~(0x0000f870u | 0x00020600u | 0x00010000u);
+constexpr std::uint32_t PixelStageRunsMask = 0x00020747u;
 constexpr std::uint32_t AlphaToCoverageMask = ~0x0001ff00u;
 constexpr std::uint32_t ScanModeMask = ~2u;
 constexpr std::uint32_t ScanControlMask = ~0x06023fffu;
@@ -631,6 +632,13 @@ std::array<std::uint8_t, 8> ExportMappings(const State& state) {
     return mappings;
 }
 
+std::size_t CmaskBytes(std::uint32_t width, std::uint32_t height) {
+    constexpr std::size_t metablockWidth = 1024;
+    constexpr std::size_t metablockHeight = 512;
+    constexpr std::size_t metablockBytes = 4096;
+    return ((width + metablockWidth - 1) / metablockWidth) * ((height + metablockHeight - 1) / metablockHeight) * metablockBytes;
+}
+
 ColorTarget DecodeColorBuffer(const Registers& cx, std::uint32_t slot) {
     const auto stride = slot * 0xfu;
     ColorTarget color{};
@@ -642,7 +650,7 @@ ColorTarget DecodeColorBuffer(const Registers& cx, std::uint32_t slot) {
     const auto format = (info >> 2u) & 0x1fu;
     const auto decoded = DecodeColorFormat(format, number, swap);
     // ROUND_MODE (bit 18) only affects unorm rounding. With DCC_ENABLE (bit 28) the target is written
-    if ((info & ~(0x00039f7cu | 0x00040000u | 0x10000000u)) != 0) throw std::runtime_error("AGC graphics: color compression, DCC, endian conversion, nonstandard rounding or color optimization is unsupported (CB_COLOR_INFO 0x" + [&] { char text[16]; std::snprintf(text, sizeof(text), "%08x", info); return std::string(text); }() + ")");
+    if ((info & ~(0x00039f7cu | 0x00040000u | 0x10000000u | 0x00002000u)) != 0) throw std::runtime_error("AGC graphics: color compression, DCC, endian conversion, nonstandard rounding or color optimization is unsupported (CB_COLOR_INFO 0x" + [&] { char text[16]; std::snprintf(text, sizeof(text), "%08x", info); return std::string(text); }() + ")");
     Require((info & 0x8000u) != 0 || number == 7 || number == 4 || number == 5, "unclamped normalized color is unsupported");
     const auto view = read(cx, 0x31b + stride);
     Require((view & ~0x3fffffffu) == 0, "reserved CB_COLOR_VIEW bits are set");
@@ -689,6 +697,13 @@ ColorTarget DecodeColorBuffer(const Registers& cx, std::uint32_t slot) {
     for (std::uint32_t word = 0; word < 2; ++word) {
         const auto clear = find(cx, 0x323 + word + stride);
         color.clearWords[word] = clear == cx.end() ? 0u : clear->second;
+    }
+    if ((info & 0x2000u) != 0) {
+        Require(maxMip == 0 && !volume && slice == 0, "CMASK fast clears of a mipmapped, 3D or array color target are unsupported");
+        const auto cmaskHigh = find(cx, 0x398 + slot);
+        color.cmaskAddress = ((cmaskHigh == cx.end() ? 0ull : static_cast<std::uint64_t>(cmaskHigh->second & 0xffu)) << 40u) | (static_cast<std::uint64_t>(read(cx, 0x31f + stride)) << 8u);
+        Require(color.cmaskAddress != 0, "CMASK fast clears without a CMASK address are unsupported");
+        color.cmaskBytes = CmaskBytes(color.extent.width, color.extent.height);
     }
     if ((info & 0x10000000u) != 0) {
         if (maxMip == 0) {
@@ -792,7 +807,7 @@ std::string DrawRejection(const QueueState& queue, bool indexed) {
     std::uint32_t targetMask = 0, shaderMask = 0;
     if (value(cx, 0x8e, targetMask) && value(cx, 0x8f, shaderMask) && value(cx, 0x202, word) && !colorControlSupported(word, (targetMask & shaderMask) != 0)) return colorControlMessage(word);
     if (auto reason = nonzero(cx, 0x1c4, zFormatSupported(zFormat) ? 0u : ~0u, "depth or sample-mask export"); !reason.empty()) return reason;
-    if (PixelProgramUnset(queue)) return NullPixelProgramRejection(queue);
+    if (PixelProgramSkipped(queue)) return NullPixelProgramRejection(queue);
     for (const auto offset : {0x1b3u, 0x1b4u, 0x1c5u}) {
         if (find(cx, offset) != cx.end()) continue;
         char text[64];
@@ -802,10 +817,17 @@ std::string DrawRejection(const QueueState& queue, bool indexed) {
     return {};
 }
 
-bool PixelProgramUnset(const QueueState& queue) {
+bool PixelProgramSkipped(const QueueState& queue) {
     const auto low = find(queue.shader, 0x008, RegisterBank::Shader);
     const auto high = find(queue.shader, 0x009, RegisterBank::Shader);
-    return low != queue.shader.end() && high != queue.shader.end() && low->second == 0 && high->second == 0;
+    if (low != queue.shader.end() && high != queue.shader.end() && low->second == 0 && high->second == 0) return true;
+    const auto& cx = queue.context;
+    const auto targetMask = find(cx, 0x8e);
+    const auto shaderMask = find(cx, 0x8f);
+    const auto zFormat = find(cx, 0x1c4);
+    const auto shaderControl = find(cx, 0x203);
+    if (targetMask == cx.end() || shaderMask == cx.end() || zFormat == cx.end() || shaderControl == cx.end()) return false;
+    return (targetMask->second & shaderMask->second) == 0 && zFormat->second == 0 && (shaderControl->second & PixelStageRunsMask) == 0;
 }
 
 std::string NullPixelProgramRejection(const QueueState& queue) {

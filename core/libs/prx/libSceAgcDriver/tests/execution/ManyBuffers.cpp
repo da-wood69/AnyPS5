@@ -10,6 +10,7 @@
 #include <iostream>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -150,6 +151,10 @@ int main() {
         std::puts("many buffers tests passed");
         return 0;
     } catch (const std::exception& error) {
+        if (std::string_view(error.what()).find("shader descriptors exceed per-stage limits") != std::string_view::npos) {
+            std::puts("skipped, the device lacks enough per-stage storage-buffer descriptors");
+            return VulkanTestSkipped;
+        }
         std::cerr << error.what() << '\n';
         return 1;
     }

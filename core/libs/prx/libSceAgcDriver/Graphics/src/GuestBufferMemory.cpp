@@ -398,6 +398,11 @@ const HostImport* importAllocation(const Context& context, HostImports& state, s
         }
         entry.alias = GuestArena::GuestArenaMapAlias_nid_postfix(static_cast<std::uintptr_t>(base), static_cast<std::size_t>(bytes));
     }
+#else
+    if (!GuestMemory::Accessible(reinterpret_cast<const void*>(base), static_cast<std::size_t>(bytes), true)) {
+        state.failed.insert(base);
+        return nullptr;
+    }
 #endif
     decideImportWatch(context, state);
     VkResult result = VK_SUCCESS;
@@ -1114,6 +1119,24 @@ void ClearImageMirrors(VkDevice device) {
         state.device = VK_NULL_HANDLE;
     }
     Spaces().current.store(nullptr);
+}
+
+void ClearHostImports(VkDevice device) {
+    auto& state = Imports();
+    std::lock_guard lock(state.mutex);
+    if (state.device != device) return;
+    for (const auto& [address, entry] : state.imports) {
+        state.destroyBuffer(state.device, entry.buffer, nullptr);
+        state.freeMemory(state.device, entry.memory, nullptr);
+#ifdef _WIN32
+        GuestArena::GuestArenaUnmapAlias_nid_postfix(entry.alias);
+#endif
+    }
+    state.imports.clear();
+    state.failed.clear();
+    state.device = VK_NULL_HANDLE;
+    state.refreshedGeneration = 0;
+    ++state.epoch;
 }
 
 #ifndef _WIN32

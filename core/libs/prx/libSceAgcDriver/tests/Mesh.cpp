@@ -122,7 +122,7 @@ struct MeshDraw {
 void DrawMesh(AgcDriver::VulkanDevice& device, const MeshDraw& setup) {
     const auto target = device.Target();
     std::vector<std::uint32_t> userData(12, 0u);
-    const auto index = AgcDriver::Graphics::MeshIndexBufferDescriptor(setup.draw, reinterpret_cast<std::uintptr_t>(GeometryCode.data()));
+    const auto index = AgcDriver::Graphics::MeshIndexBufferDescriptor(setup.draw);
     std::copy(index.begin(), index.end(), userData.begin() + ShaderRecompiler::MeshIndexBufferUserWord);
     std::copy(setup.vertexBuffer.begin(), setup.vertexBuffer.end(), userData.begin() + 8);
     const std::array<ShaderRecompiler::MemoryRegion, 1> geometryMemory{{{reinterpret_cast<std::uintptr_t>(GeometryCode.data()), std::as_bytes(std::span(GeometryCode))}}};

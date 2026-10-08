@@ -83,6 +83,7 @@ ShaderStageInputInfo BuildShaderStageInputInfo(ShaderStageKind stage, const Gues
         computeStorage.groupId[1] = compute.groupIdEnable[1];
         computeStorage.groupId[2] = compute.groupIdEnable[2];
         computeStorage.tgSizeEn = compute.tgSizeEnable;
+        computeStorage.scratchSizeDwords = compute.scratchDwords;
         computeStorage.threadIdsNum = static_cast<int>(compute.threadIdComponentCount);
         computeStorage.partialGroups = compute.PartialGroups();
         // Workgroup ids (and the thread-group size word) follow the user SGPRs.
@@ -138,6 +139,7 @@ ShaderStageInputInfo BuildShaderStageInputInfo(ShaderStageKind stage, const Gues
         pixelStorage.psEarlyZ = pixel.earlyZ;
         pixelStorage.psExecuteOnNoop = pixel.executeOnNoop;
         pixelStorage.psConservativeZExport = pixel.conservativeZExport;
+        pixelStorage.psOrderedPixelShader = pixel.orderedPixelShader;
         ShaderStageInputInfo result;
         result.pixel = &pixelStorage;
         return result;

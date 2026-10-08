@@ -116,6 +116,7 @@ private:
         append(key, value.tgSizeEnable);
         append(key, value.threadIdComponentCount);
         append(key, value.PartialGroups());
+        append(key, value.scratchDwords);
     }
 
     static void append(std::vector<std::uint64_t>& key, const ShaderPixelStageInfo& value) {
@@ -141,6 +142,7 @@ private:
         append(key, value.earlyZ);
         append(key, value.executeOnNoop);
         append(key, value.conservativeZExport);
+        append(key, value.orderedPixelShader);
         append(key, value.targetOutputMode);
         append(key, value.targetExportMapping);
     }

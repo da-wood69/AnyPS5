@@ -42,7 +42,7 @@ std::uint32_t GuestFormatFor(VkFormat format, std::uint32_t elementBytes) {
 
 // The color buffer as a single-mip 2D surface descriptor (tile mode SW_64KB_R_X).
 GuestTextureResource SurfaceForTarget(const ColorTarget& color) {
-    Require(color.tileMode == ColorTileMode::RenderTarget || color.tileMode == ColorTileMode::Standard4KB, "only 4 KiB standard and 64 KiB tiled color targets are resident");
+    Require(color.tileMode != ColorTileMode::Linear, "linear color targets are not resident");
     const bool chain = color.mipCount > 1;
     GuestTextureResource surface{};
     surface.baseAddress = chain ? color.surfaceAddress : color.address;
@@ -90,15 +90,18 @@ bool clearToTexel(StorageTexture& image, const std::array<std::byte, 16>& texel,
     return image.FillClear(std::span<const std::uint32_t, 4>(pattern), StorageTexture::WholeImage, refusal);
 }
 
+void writeTexels(const ColorTarget& color, const std::array<std::byte, 16>& texel) {
+    const auto elementBytes = static_cast<std::size_t>(color.elementBytes);
+    std::vector<std::byte> texels(color.bytes);
+    for (std::size_t offset = 0; offset + elementBytes <= texels.size(); offset += elementBytes) std::memcpy(texels.data() + offset, texel.data(), elementBytes);
+    GuestMemory::Write(color.address, texels);
+}
+
 void storeClearTexels(const Context& context, const ColorTarget& color, const std::array<std::byte, 16>& texel) {
     StorageTexture::FlushPending(color.address, color.bytes, nullptr, "fast-clear materialization");
     const auto keys = ReadDccKeys(color.dccAddress, color.bytes);
     if (!IsDccClear(keys)) return;
-    const auto current = keys == DccKeys::ClearRegister ? texel : clearTexel(color, keys);
-    const auto elementBytes = static_cast<std::size_t>(color.elementBytes);
-    std::vector<std::byte> texels(color.bytes);
-    for (std::size_t offset = 0; offset + elementBytes <= texels.size(); offset += elementBytes) std::memcpy(texels.data() + offset, current.data(), elementBytes);
-    GuestMemory::Write(color.address, texels);
+    writeTexels(color, keys == DccKeys::ClearRegister ? texel : clearTexel(color, keys));
     MarkDccUncompressed(context, color.dccAddress, color.bytes);
 }
 
@@ -123,6 +126,24 @@ void materializeRegisterClear(const Context& context, const ColorTarget& color, 
     }
     storeClearTexels(context, color, texel);
     resident.Refresh();
+}
+
+bool materializeCmaskClear(const Context& context, const ColorTarget& color, StorageTexture* resident) {
+    if (color.cmaskAddress == 0) return false;
+    const auto metadataBytes = static_cast<std::uint64_t>(color.cmaskBytes) * 256u;
+    const auto state = CurrentDccKeys(color.cmaskAddress, metadataBytes);
+    if (state == DccKeys::Uncompressed) return false;
+    Require(color.dccAddress == 0, std::string("CMASK of a DCC color target that is not all expanded is not modeled (") + DccKeysName(state) + ")");
+    Require(state == DccKeys::Clear0000, std::string("CMASK whose tiles are not all fast-cleared or all expanded is not modeled (") + DccKeysName(state) + ")");
+    const auto texel = clearTexel(color, DccKeys::ClearRegister);
+    const char* refusal = nullptr;
+    if (resident == nullptr || !clearToTexel(*resident, texel, color.elementBytes, refusal)) {
+        StorageTexture::FlushPending(color.address, color.bytes, nullptr, "fast-clear materialization");
+        writeTexels(color, texel);
+        if (resident != nullptr) resident->Refresh();
+    }
+    MarkDccUncompressed(context, color.cmaskAddress, metadataBytes);
+    return true;
 }
 
 void imageBarrier(const Context& context, VkCommandBuffer commands, VkImage image, VkImageLayout oldLayout, VkImageLayout newLayout, VkPipelineStageFlags sourceStage, VkPipelineStageFlags destinationStage, VkAccessFlags sourceAccess, VkAccessFlags destinationAccess) {
@@ -601,11 +622,12 @@ void CheckBufferAliases(std::span<const CompiledShader> shaders, const ColorTarg
 
 }
 
-std::array<std::uint32_t, 4> MeshIndexBufferDescriptor(const Pm4::DrawParameters& draw, std::uint64_t unreadAddress) {
-    const auto address = draw.indexed ? draw.indexAddress : unreadAddress;
-    const auto bytes = draw.indexed ? (static_cast<std::uint64_t>(draw.indexCount) * draw.indexSize + 3u) & ~std::uint64_t{3} : 4u;
-    Require(address != 0 && bytes != 0 && bytes <= 0xffffffffu && (address >> 48u) == 0, "invalid mesh index buffer range");
+std::array<std::uint32_t, 4> MeshIndexBufferDescriptor(const Pm4::DrawParameters& draw) {
     constexpr std::uint32_t RawWord3 = 0x31016facu;
+    if (!draw.indexed) return {0u, 0u, 0u, RawWord3};
+    const auto address = draw.indexAddress;
+    const auto bytes = (static_cast<std::uint64_t>(draw.indexCount) * draw.indexSize + 3u) & ~std::uint64_t{3};
+    Require(address != 0 && bytes != 0 && bytes <= 0xffffffffu && (address >> 48u) == 0, "invalid mesh index buffer range");
     return {static_cast<std::uint32_t>(address), static_cast<std::uint32_t>(address >> 32u) & 0xffffu, static_cast<std::uint32_t>(bytes), RawWord3};
 }
 
@@ -895,6 +917,7 @@ std::shared_ptr<StorageTexture> refreshResidentTarget(const Context& context, co
         std::lock_guard lock(reportMutex);
         if (reported.insert(color.address).second) std::fprintf(stderr, "[gpu] color target 0x%llx stays non-resident: %s\n", static_cast<unsigned long long>(color.address), error.what());
     }
+    if (resident != nullptr) materializeCmaskClear(context, color, resident.get());
     if (profile) {
         const auto lookupUs = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - lookupStart).count();
         ++outcome.targetLookups;
@@ -1523,7 +1546,7 @@ void Draw(const Context& context, const State& state, const Pm4::DrawParameters&
         timer.phase(PhaseSetup);
         // Debug aid: APS5_NO_RESIDENT_TARGETS=1 copies every target in and out again.
         static const bool residentTargets = std::getenv("APS5_NO_RESIDENT_TARGETS") == nullptr;
-        if ((binding.gpuTiling || (color.tileMode == ColorTileMode::Standard4KB && context.detiler != nullptr)) && residentTargets) {
+        if ((binding.gpuTiling || (color.tileMode != ColorTileMode::Linear && context.detiler != nullptr)) && residentTargets) {
             // The lookup refreshes the image on every draw (StorageTexture::Refresh: FlushPending,
             // CollectWrites over the target's pages, the DCC key scan of TextureClearKeys, then
             // UnchangedSince). The page walk is skipped while the worker's collect epoch lasts
@@ -1543,6 +1566,7 @@ void Draw(const Context& context, const State& state, const Pm4::DrawParameters&
             targetViews.push_back(binding.proxied ? binding.resident->AttachmentProxyView() : binding.resident->AttachmentView(color.format, color.mip, color.depthSlice));
             continue;
         }
+        materializeCmaskClear(context, color, nullptr);
         Require(!color.mipTail, "rendering into a packed mip tail needs the resident image of its surface");
         Require(color.depth == 1, "rendering into a 3D color target needs the resident image of its surface");
         if (binding.gpuTiling) {
@@ -2103,22 +2127,33 @@ DrawRecipeOutcome DrawWithRecipe(const Context& context, const State& state, con
     return result;
 }
 
+namespace {
+
+std::shared_ptr<StorageTexture> metadataPassResident(const Context& context, const ColorTarget& color) {
+    if (color.tileMode == ColorTileMode::Linear || context.detiler == nullptr) return nullptr;
+    std::shared_ptr<StorageTexture> resident;
+    try {
+        resident = CachedStorageSurface(context, SurfaceForTarget(color));
+    } catch (const std::exception&) {
+        return nullptr;
+    }
+    return resident != nullptr && resident->GuestBytes() == color.bytes ? resident : nullptr;
+}
+
+}
+
 void RunColorMetadataPass(const Context& context, const ColorMetadataPass& pass) {
     for (const auto& color : pass.targets) {
+        if (color.cmaskAddress != 0) {
+            const auto resident = metadataPassResident(context, color);
+            if (materializeCmaskClear(context, color, resident.get()) && resident != nullptr) resident->MarkDirty();
+        }
         if (color.dccAddress == 0) continue;
         auto keys = CurrentDccKeys(color.dccAddress, color.bytes);
         if (keys == DccKeys::Uncompressed) continue;
         Require(IsDccClear(keys), std::string("CB metadata pass over DCC keys that are ") + DccKeysName(keys) + " (per-block metadata is not modeled)");
         const auto texel = clearTexel(color, keys);
-        std::shared_ptr<StorageTexture> resident;
-        if ((color.tileMode == ColorTileMode::RenderTarget || color.tileMode == ColorTileMode::Standard4KB) && context.detiler != nullptr) {
-            try {
-                resident = CachedStorageSurface(context, SurfaceForTarget(color));
-            } catch (const std::exception&) {
-                resident = nullptr;
-            }
-            if (resident != nullptr && resident->GuestBytes() != color.bytes) resident = nullptr;
-        }
+        const auto resident = metadataPassResident(context, color);
         if (resident != nullptr) {
             const char* refusal = nullptr;
             const bool current = keys == DccKeys::ClearRegister ? clearToTexel(*resident, texel, color.elementBytes, refusal) : StorageTexture::FindPending(color.address, color.bytes) == resident || resident->UploadedKeys() == keys;

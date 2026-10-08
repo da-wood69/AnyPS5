@@ -24,6 +24,7 @@ using AgcDriver::Graphics::Require;
 using ShaderRecompiler::ShaderStage;
 
 constexpr std::uint32_t Threads = 64;
+constexpr std::uint32_t Int64AtomicsCapability = 12;
 constexpr std::uint32_t OpCount = 8;
 constexpr std::uint32_t NarrowOps = 3;
 constexpr std::uint32_t OpStride = 0x200;
@@ -736,6 +737,11 @@ int main() {
     try {
         const auto device = OpenVulkanTestDevice();
         if (!device) return VulkanTestSkipped;
+        const auto capabilities = device->Target().supportedCapabilities;
+        if (std::find(capabilities.begin(), capabilities.end(), Int64AtomicsCapability) == capabilities.end()) {
+            std::puts("skipped, the device has no shaderBufferInt64Atomics");
+            return VulkanTestSkipped;
+        }
         GuestBlock writable(true);
         GuestBlock readOnly(false);
         RunAtomics(*device, writable, 32);

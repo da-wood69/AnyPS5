@@ -31,6 +31,7 @@ static std::filesystem::path TemporaryDirectory(const AppContentMountPoint* moun
 
 static void ClearDirectory(const std::filesystem::path& directory) {
     for (const auto& entry : std::filesystem::directory_iterator(directory)) std::filesystem::remove_all(entry.path());
+    RecordWrittenPath_nid_no_patch(directory);
 }
 
 extern "C" {
@@ -82,7 +83,7 @@ int APS5_VABI sceAppContentDownloadDataGetAvailableSpaceKb(const AppContentMount
         return 0;
     }
     const auto directory = ResolvePath_nid_no_patch(DOWNLOAD_MOUNT_POINT);
-    std::filesystem::create_directories(directory);
+    if (std::filesystem::create_directories(directory)) RecordWrittenPath_nid_no_patch(directory);
     std::uint64_t usedKb = 0;
     for (const auto& entry : std::filesystem::recursive_directory_iterator(directory)) {
         if (entry.is_regular_file()) usedKb += (entry.file_size() + 1023u) / 1024u;
@@ -116,7 +117,7 @@ int APS5_VABI sceAppContentTemporaryDataMount2(uint32_t option, AppContentMountP
     std::memset(mount_point->data, 0, sizeof(mount_point->data));
     std::memcpy(mount_point->data, TEMPORARY_MOUNT_POINT, sizeof(TEMPORARY_MOUNT_POINT));
     const auto directory = TemporaryDirectory(mount_point);
-    std::filesystem::create_directories(directory);
+    if (std::filesystem::create_directories(directory)) RecordWrittenPath_nid_no_patch(directory);
     if (option == TEMPORARY_DATA_OPTION_FORMAT) ClearDirectory(directory);
     return 0;
 }

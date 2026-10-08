@@ -91,7 +91,7 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
         if (!graphics.stages.mesh) return;
         auto& words = programs.front().userData;
         require(programs.front().firstUserSgpr == 0 && words.size() >= ShaderRecompiler::MeshIndexBufferUserWord + 4, "mesh program lacks the hidden user words");
-        const auto descriptor = Graphics::MeshIndexBufferDescriptor(parameters, programs.front().binary.codeAddress);
+        const auto descriptor = Graphics::MeshIndexBufferDescriptor(parameters);
         std::copy(descriptor.begin(), descriptor.end(), words.begin() + ShaderRecompiler::MeshIndexBufferUserWord);
     };
     if (!drawParameters.indirect) setMeshIndexBuffer(drawParameters);

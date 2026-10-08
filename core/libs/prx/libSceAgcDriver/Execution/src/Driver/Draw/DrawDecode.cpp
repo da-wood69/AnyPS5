@@ -15,8 +15,9 @@ std::shared_ptr<DrawDecode> Driver::decodeDraw(const QueueState& queue, const Su
         require((high & ~0xffu) == 0, "reserved graphics program address bits are set");
         return (static_cast<std::uint64_t>(readRegister(queue.shader, base)) << 8u) | (static_cast<std::uint64_t>(high) << 40u);
     };
+    const bool pixelSkipped = Graphics::PixelProgramSkipped(queue);
     const auto prepare = [&](std::uint64_t address, std::uint8_t type, Stage stage, std::uint32_t rsrc2, std::uint32_t userDataBase) {
-        const bool nullPixel = address == 0 && stage == Stage::Fragment;
+        const bool nullPixel = stage == Stage::Fragment && (address == 0 || pixelSkipped);
         if (nullPixel) address = NullPixelProgramAddress();
         auto it = submission.shaders->upper_bound(address);
         require(it != submission.shaders->begin(), "graphics program does not belong to a registered shader");
@@ -89,7 +90,7 @@ std::shared_ptr<DrawDecode> Driver::decodeDraw(const QueueState& queue, const Su
         } else {
             append(0xc8, 2, Stage::Vertex, 0x8b, 0x8c, Role::Main);
         }
-        const bool nullPixel = Graphics::PixelProgramUnset(queue);
+        const bool nullPixel = pixelSkipped;
         if (nullPixel) {
             const auto rejection = Graphics::NullPixelProgramRejection(queue);
             require(rejection.empty(), rejection.c_str());

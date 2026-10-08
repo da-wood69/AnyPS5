@@ -145,6 +145,8 @@ RelinkResult RelinkerPipeline::Relink(const std::vector<std::uint8_t>& sourceElf
     constexpr std::size_t relaEntSize = 24;
     if (readAsSize(DT_OS_RELAENT, DT_RELAENT, "DT_RELAENT") != relaEntSize)
         throw RelinkerException("Unsupported DT_RELAENT value");
+    if (dynRelaSize % relaEntSize != 0)
+        throw RelinkerException("Invalid DT_RELASZ value");
 
     std::vector<std::pair<std::uint64_t, std::string>> neededLibraryNamesByStrOffset;
     for (const auto& tag : dynTags)

@@ -113,6 +113,7 @@ void testClearState() {
     graphics.ClearContext();
     check(graphics.context == AgcDriver::InitialContextRegisters(), "CLEAR_STATE retained context registers");
     check(graphics.shader == shader && graphics.userConfig == userConfig, "CLEAR_STATE reset unrelated registers");
+    check(graphics.context.count(0x1b3) == 1 && graphics.context.at(0x1b3) == 0 && graphics.context.count(0x1b4) == 1 && graphics.context.at(0x1b4) == 0, "CLEAR_STATE left SPI_PS_INPUT_ENA/ADDR unset");
     graphics.context.emplace(0x10, 31);
     graphics.ClearContext();
     check(graphics.context == AgcDriver::InitialContextRegisters(), "repeated CLEAR_STATE retained context registers");
@@ -193,6 +194,14 @@ void testEndOfPipeInterrupts() {
     check(sceAgcDriverSubmitDcb(&packet) == 0, "plain release submit failed");
     AgcDriverWaitIdle_nid_postfix();
     check(owner->GetTriggeredEvents(events.data(), 2) == 0, "release without INT_SEL raised an interrupt");
+    alignas(8) static volatile std::uint64_t label = 0;
+    const auto labelAddress = reinterpret_cast<std::uintptr_t>(&label);
+    words = {0xc0064900, 0x528, (3u << 29u) | (3u << 24u) | (1u << 16u), static_cast<std::uint32_t>(labelAddress), static_cast<std::uint32_t>(static_cast<std::uint64_t>(labelAddress) >> 32u), 0x89abcdefu, 0x01234567u, 0};
+    check(sceAgcDriverSubmitDcb(&packet) == 0, "send-data release submit failed");
+    AgcDriverWaitIdle_nid_postfix();
+    check(label != 0, "send-data release did not write its label");
+    check(owner->GetTriggeredEvents(events.data(), 2) == 0, "release with INT_SEL send data after write confirm raised an interrupt");
+    words = {0xc0064900, 0, 1u << 24u, 0, 0, 0, 0, 0};
     check(sceAgcDriverDeleteEqEvent(eq, 0) == 0, "graphics event deletion failed");
     expectFailure([&] { sceAgcDriverDeleteEqEvent(eq, 0); });
     words[2] = 1u << 24u;

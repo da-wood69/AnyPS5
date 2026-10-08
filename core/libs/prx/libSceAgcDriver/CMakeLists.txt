@@ -180,12 +180,12 @@ target_include_directories(libSceAgcDriver PRIVATE
         ${CMAKE_SOURCE_DIR}/3rdparty/SPIRV-Headers/include
 )
 
-file(GLOB_RECURSE agcShaderCacheGuardSources CONFIGURE_DEPENDS
+file(GLOB_RECURSE agcShaderCacheGuardSources CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
         "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/*.hpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/*.h"
 )
-list(FILTER agcShaderCacheGuardSources EXCLUDE REGEX "^${CMAKE_CURRENT_SOURCE_DIR}/(tests|tools)/")
+list(FILTER agcShaderCacheGuardSources EXCLUDE REGEX "^(tests|tools)/")
 add_shader_recompiler(shader_recompiler_agc_driver libc
         GUARD_SOURCES
         ${agcShaderCacheGuardSources}
@@ -392,6 +392,20 @@ target_link_libraries(agc_driver_recorder_tests PRIVATE
 set_target_properties(agc_driver_recorder_tests PROPERTIES CXX_EXTENSIONS OFF)
 configure_windows_unwind(agc_driver_recorder_tests)
 
+add_test_executable(agc_recorder_kept_bytes_tests EXCLUDE_FROM_ALL tests/RecorderKeptBytes.cpp)
+target_include_directories(agc_recorder_kept_bytes_tests PRIVATE ${LIBS_INCLUDE_DIR} ${CMAKE_SOURCE_DIR}/core/shader/recompiler ${CMAKE_SOURCE_DIR}/3rdparty/Vulkan-Headers/include)
+target_link_libraries(agc_recorder_kept_bytes_tests PRIVATE libSceAgcDriver libc)
+set_target_properties(agc_recorder_kept_bytes_tests PROPERTIES CXX_EXTENSIONS OFF)
+configure_windows_unwind(agc_recorder_kept_bytes_tests)
+if(BUILD_TESTING)
+    set_target_properties(agc_recorder_kept_bytes_tests PROPERTIES EXCLUDE_FROM_ALL OFF)
+    add_test(NAME agc_recorder_kept_bytes COMMAND agc_recorder_kept_bytes_tests)
+    if(WIN32)
+        set_tests_properties(agc_recorder_kept_bytes PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
+endif()
+
 add_test_executable(agc_driver_pm4_tests EXCLUDE_FROM_ALL
         tests/Pm4.cpp
 )
@@ -533,6 +547,12 @@ if(BUILD_TESTING)
                 "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
         endif()
     endforeach()
+    add_test(NAME agc_driver_pm4_failure COMMAND agc_driver_pm4_tests failure)
+    set_tests_properties(agc_driver_pm4_failure PROPERTIES ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1" SKIP_RETURN_CODE 77)
+    if(WIN32)
+        set_tests_properties(agc_driver_pm4_failure PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
     if(APPLE)
         add_test_executable(macos_vulkan_probe_tests tests/MacVulkanProbe.cpp)
         target_include_directories(macos_vulkan_probe_tests PRIVATE

@@ -44,6 +44,7 @@ struct ShaderComputeStageInfo {
     bool tgSizeEnable;
     std::uint32_t threadIdComponentCount;
     std::array<std::uint32_t, 3> partialThreads;
+    std::uint32_t scratchDwords = 0;
 
     [[nodiscard]] bool PartialGroups() const {
         return partialThreads != std::array<std::uint32_t, 3>{};
@@ -126,6 +127,7 @@ struct ShaderPixelStageInfo {
     bool earlyZ;
     bool executeOnNoop;
     ConservativeZExport conservativeZExport;
+    bool orderedPixelShader;
     std::array<std::uint8_t, 8> targetOutputMode;
     std::array<std::uint8_t, 8> targetExportMapping;
 };

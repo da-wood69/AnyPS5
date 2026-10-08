@@ -739,4 +739,14 @@ int APS5_VABI sceSaveDataDirNameSearchPs4(const SaveDataDirNameSearchCond* cond,
     SAVEDATA_TRACE("dirNameSearchPs4 user=%d -> 0x%08x", cond->user_id, static_cast<unsigned>(rc));
     return rc;
 }
+
+int APS5_VABI sceSaveDataConvert() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
+
+int APS5_VABI sceSaveDataGetConvertProgress() {
+    NotImplemented_nid_no_patch(__func__);
+    return 0;
+}
 }

@@ -1,8 +1,10 @@
 #include <elfpatcher/general/GuestModuleWriter.hpp>
 #include <codegen/x86/Amd64OnlySubstitutionTable.hpp>
+#include <codegen/x86/StubBodyBuilder.hpp>
 #include <io/BufferUtils.hpp>
 #include <algorithm>
 #include <limits>
+#include <span>
 
 namespace Elfpatcher {
 
@@ -71,8 +73,9 @@ std::vector<std::uint8_t> GuestModuleWriter::WriteLinux(const Relinker::GuestIma
         Io::AppendU32(bytes, static_cast<std::uint32_t>(displacement));
         return start;
     };
-    const auto init = lifecycle(image.Init);
-    const auto fini = lifecycle(image.Fini);
+    const bool ownsLifecycle = image.ReplacementModule.empty();
+    const auto init = ownsLifecycle ? lifecycle(image.Init) : 0;
+    const auto fini = ownsLifecycle ? lifecycle(image.Fini) : 0;
     Io::AlignBuffer(bytes, 8);
     const auto dynamicOffset = bytes.size();
     const auto dynamicAddress = address();
@@ -96,8 +99,8 @@ std::vector<std::uint8_t> GuestModuleWriter::WriteLinux(const Relinker::GuestIma
         tag(20, 7);
         tag(3, image.Got);
     }
-    if (!image.InitArray.empty()) { tag(25, image.InitArray.front()); tag(27, image.InitArray.size() * 8); }
-    if (!image.FiniArray.empty()) { tag(26, image.FiniArray.front()); tag(28, image.FiniArray.size() * 8); }
+    if (ownsLifecycle && !image.InitArray.empty()) { tag(25, image.InitArray.front()); tag(27, image.InitArray.size() * 8); }
+    if (ownsLifecycle && !image.FiniArray.empty()) { tag(26, image.FiniArray.front()); tag(28, image.FiniArray.size() * 8); }
     if (init != 0) tag(12, init);
     if (fini != 0) tag(13, fini);
     tag(30, 8);
@@ -153,6 +156,7 @@ std::vector<std::uint8_t> GuestModuleWriter::WriteLinux(const Relinker::GuestIma
         const auto returnDisplacement = displacement(returnAddress, stubReturn, site.Offset);
         const auto siteDisplacement = displacement(stubAddress, siteNext, site.Offset);
         bytes.insert(bytes.end(), site.Body.begin(), site.Body.end());
+        Codegen::ApplyStubRelocations(std::span<std::uint8_t>(bytes.data() + stubOffset, site.ReturnBranchOffset), site.Relocations, site.Address, stubAddress, site.Offset);
         Io::WriteU32(bytes, stubOffset + site.ReturnBranchOffset + 1,
                      static_cast<std::uint32_t>(returnDisplacement));
         std::fill_n(bytes.begin() + static_cast<std::ptrdiff_t>(site.Offset), site.Length, kNop1.Bytes[0]);

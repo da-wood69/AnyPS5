@@ -312,9 +312,9 @@ Texture::Texture(const Context& context, TextureDetiler& detiler, const GuestTex
             VkCommandBuffer commands = VK_NULL_HANDLE;
             if (recorder != nullptr) {
                 commands = recorder->Commands();
-                recorder->Keep(staging);
-                recorder->Keep(tiled);
-                recorder->Keep(linear);
+                recorder->Keep(staging, static_cast<std::size_t>(guestBytes));
+                recorder->Keep(tiled, static_cast<std::size_t>(guestBytes));
+                recorder->Keep(linear, static_cast<std::size_t>(linearBytes));
                 recorder->Keep(owned);
             } else {
                 batch = std::make_unique<CommandBatch>(context);
@@ -1600,7 +1600,7 @@ void StorageTexture::upload(const std::vector<bool>* layers) {
             recorder->FlushStoresOverlapping(descriptor.baseAddress, static_cast<std::size_t>(guestBytes));
             commands = recorder->Commands();
             timing = recorder->BeginGpuTiming(Recorder::CommandClass::StorageUpload);
-            recorder->Keep(linear);
+            recorder->Keep(linear, linear->Size());
             // The image itself must outlive the recorded copy: the cache may evict it right after.
             if (auto self = weak_from_this().lock()) recorder->Keep(std::move(self));
             // The detile reads the tiled bytes from the import when the batch runs.
@@ -1929,7 +1929,7 @@ std::uint64_t StorageTexture::uploadWindows(const HostImport& import, std::span<
         for (const auto& [begin, end] : reads) recorder->FlushStoresOverlapping(begin, static_cast<std::size_t>(end - begin));
         commands = recorder->Commands();
         timing = recorder->BeginGpuTiming(Recorder::CommandClass::StorageUpload);
-        recorder->Keep(linear);
+        recorder->Keep(linear, linear->Size());
         for (const auto& source : sources) {
             if (source.slab != nullptr) recorder->Keep(source.slab);
         }
@@ -2095,8 +2095,8 @@ std::uint64_t StorageTexture::writeBackWindows(const HostImport& import, std::sp
         recorder->FlushStoresOverlapping(flushBegin, static_cast<std::size_t>(flushEnd - flushBegin));
         commands = recorder->Commands(&covered);
         timing = recorder->BeginGpuTiming(Recorder::CommandClass::StorageWriteBack);
-        recorder->Keep(linear);
-        recorder->Keep(tiledScratch);
+        recorder->Keep(linear, linear->Size());
+        recorder->Keep(tiledScratch, tiledScratch->Size());
         for (const auto& pieces : slabPieces) recorder->Keep(pieces.slab);
         for (const auto& slab : padding.slabs) recorder->Keep(slab);
         if (auto self = weak_from_this().lock()) recorder->Keep(std::move(self));
@@ -3517,8 +3517,8 @@ void StorageTexture::writeBackLayers(const std::vector<bool>& layers) {
             recorder->FlushStoresOverlapping(firstStored, static_cast<std::size_t>(lastStored - firstStored));
             commands = recorder->Commands();
             timing = recorder->BeginGpuTiming(Recorder::CommandClass::StorageWriteBack);
-            recorder->Keep(linear);
-            recorder->Keep(tiledScratch);
+            recorder->Keep(linear, linear->Size());
+            recorder->Keep(tiledScratch, tiledScratch->Size());
             for (const auto& slab : padding.slabs) recorder->Keep(slab);
             // The image itself must outlive the recorded retile: the cache may evict it right after.
             if (auto self = weak_from_this().lock()) recorder->Keep(std::move(self));

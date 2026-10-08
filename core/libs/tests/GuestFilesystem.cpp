@@ -20,6 +20,7 @@ int APS5_VABI fchmod_nid_postfix(int, int);
 int APS5_VABI futimes_nid_postfix(int, const KernelTimeval*);
 int APS5_VABI socket_nid_postfix(int, int, int);
 int APS5_VABI sceKernelFsync(int);
+int APS5_VABI sceKernelWriteThrottlingStatus(std::uint64_t*);
 int APS5_VABI sceKernelFtruncate(int, long long);
 int APS5_VABI sceKernelTruncate_nid_postfix(const char*, long long);
 int APS5_VABI sceKernelUtimes_nid_postfix(const char*, const void*);
@@ -49,6 +50,9 @@ static void Check(bool value, int line) {
 #define Require(value) Check((value), __LINE__)
 int main() {
     Require(sceKernelDebugOutText(-1, "text") == static_cast<int>(0x80020016u));
+    std::uint64_t throttling[4] = {1, 2, 3, 4};
+    Require(sceKernelWriteThrottlingStatus(throttling) == 0);
+    Require(throttling[0] == 0xffffffffu && throttling[1] == 0 && throttling[2] == 0 && throttling[3] == 0);
     Require(sceKernelDebugOutText(0, nullptr) == static_cast<int>(0x8002000eu));
     auto* captured = std::tmpfile();
     Require(captured != nullptr);
