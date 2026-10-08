@@ -2433,6 +2433,10 @@ ShaderRecompiler::SpirvTarget VulkanDevice::ComputeTarget(std::uint32_t waveSize
     return target;
 }
 
+VkShaderStageFlags VulkanDevice::SubgroupStages() const {
+    return state->subgroup.supportedStages;
+}
+
 std::string VulkanDevice::DeviceName() const {
     return state->properties.deviceName;
 }

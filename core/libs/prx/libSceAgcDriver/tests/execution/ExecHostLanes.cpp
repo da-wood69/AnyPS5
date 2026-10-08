@@ -167,7 +167,9 @@ int main() {
         if (!device) return VulkanTestSkipped;
         Dispatch(*device);
         Check("compute lane", Threads);
-        if (device->Target().subgroupSize < 32u) {
+        if ((device->SubgroupStages() & VK_SHADER_STAGE_VERTEX_BIT) == 0) {
+            std::puts("vertex draw skipped, subgroup operations are unavailable in the vertex stage");
+        } else if (device->Target().subgroupSize < 32u) {
             std::printf("vertex draw skipped, subgroup size %u cannot hold a wave32\n", device->Target().subgroupSize);
         } else {
             Draw(*device);
