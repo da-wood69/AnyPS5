@@ -31,6 +31,7 @@ struct Module {
     void* native = nullptr;
 #ifdef __APPLE__
     const void* image = nullptr;
+    bool guest = false;
 #endif
     bool owned = true;
     bool global = false;
@@ -39,6 +40,13 @@ struct Module {
 #ifdef _WIN32
             FreeLibrary(static_cast<HMODULE>(native));
 #else
+#ifdef __APPLE__
+            if (guest) {
+                using CloseGuest = int (*)(void*);
+                if (const auto closeGuest = reinterpret_cast<CloseGuest>(::dlsym(RTLD_DEFAULT, "AnyPs5GuestDlclose"))) closeGuest(native);
+                return;
+            }
+#endif
             ::dlclose(native);
 #endif
         }
@@ -67,6 +75,13 @@ void* Symbol(Module& module, const char* name) {
 #ifdef _WIN32
     return reinterpret_cast<void*>(GetProcAddress(static_cast<HMODULE>(module.native), name));
 #else
+#ifdef __APPLE__
+    if (module.guest) {
+        using GuestSymbol = void* (*)(void*, const char*);
+        const auto callback = reinterpret_cast<GuestSymbol>(::dlsym(RTLD_DEFAULT, "AnyPs5GuestDlsym"));
+        return callback ? callback(module.native, name) : nullptr;
+    }
+#endif
     return ::dlsym(module.native, name);
 #endif
 }
@@ -122,10 +137,20 @@ void* APS5_VABI dlopen_nid_postfix(const char* path, int flags) {
         const auto resolved = path ? RelinkedModulePath(ResolvePath_nid_no_patch(path)).string() : std::string{};
         const int nativeFlags = ((flags & 3) == 1 ? RTLD_LAZY : RTLD_NOW) |
             ((flags & 0x100) ? RTLD_GLOBAL : RTLD_LOCAL);
+#ifdef __APPLE__
+        using OpenGuest = void* (*)(const char*, int, char*, std::size_t);
+        const auto guestCallback = reinterpret_cast<OpenGuest>(::dlsym(RTLD_DEFAULT, "AnyPs5GuestDlopen"));
+        if (path && resolved.ends_with(".guest.prx") && guestCallback) {
+            std::array<char, 512> message{};
+            module->native = guestCallback(resolved.c_str(), flags, message.data(), message.size());
+            module->guest = true;
+            if (!module->native) { Error(message[0] ? message.data() : "dlopen: macOS guest module load failed"); return nullptr; }
+        } else
+#endif
         module->native = ::dlopen(path ? resolved.c_str() : nullptr, nativeFlags);
         if (!module->native) { Error(::dlerror()); return nullptr; }
 #ifdef __APPLE__
-        module->image = path ? ImageForPath(resolved) : _dyld_get_image_header(0);
+        if (!module->guest) module->image = path ? ImageForPath(resolved) : _dyld_get_image_header(0);
 #endif
 #endif
         std::lock_guard lock(modulesMutex);

@@ -6,6 +6,8 @@
 #include <system_error>
 #ifdef _WIN32
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
 #endif
 
 #include "prx/libSceFont/include/FontInternal.hpp"
@@ -91,6 +93,12 @@ std::filesystem::path ExecutableDirectory() {
     const auto length = GetModuleFileNameW(nullptr, module, MAX_PATH);
     if (length == 0 || length == MAX_PATH) throw std::runtime_error("libSceFont: cannot locate the executable");
     return std::filesystem::path(module).parent_path();
+#elif defined(__APPLE__)
+    std::uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size);
+    std::vector<char> module(size);
+    if (_NSGetExecutablePath(module.data(), &size) != 0) throw std::runtime_error("libSceFont: cannot locate the executable");
+    return std::filesystem::weakly_canonical(module.data()).parent_path();
 #else
     return std::filesystem::read_symlink("/proc/self/exe").parent_path();
 #endif

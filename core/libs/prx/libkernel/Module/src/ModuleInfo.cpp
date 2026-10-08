@@ -273,7 +273,15 @@ int APS5_VABI sceKernelGetModuleInfoFromAddr(std::uint64_t address, int flags, M
     return 0;
 #elif defined(__APPLE__)
     DarwinImage image{};
-    if (!FindImage(static_cast<std::uintptr_t>(address), image)) return SCE_KERNEL_ERROR_ESRCH;
+    if (!FindImage(static_cast<std::uintptr_t>(address), image)) {
+        using GuestModuleInfo = int (*)(std::uint64_t, ModuleInfoEx*);
+        const auto callback = reinterpret_cast<GuestModuleInfo>(dlsym(RTLD_DEFAULT, "AnyPs5GuestModuleInfo"));
+        ModuleInfoEx result{};
+        result.st_size = sizeof(result);
+        if (!callback || callback(address, &result) != 0) return SCE_KERNEL_ERROR_ESRCH;
+        *info = result;
+        return 0;
+    }
     ModuleInfoEx result{};
     result.st_size = sizeof(ModuleInfoEx);
     Fill(image, result);

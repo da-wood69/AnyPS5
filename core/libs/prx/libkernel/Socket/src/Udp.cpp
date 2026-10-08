@@ -12,6 +12,7 @@
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include "prx/libkernel/Socket/include/SocketRuntime.hpp"
 #include <algorithm>
+#include <array>
 #include <climits>
 #include <cstdint>
 #include <cstring>
@@ -117,6 +118,9 @@ bool Address(const void* input, std::uint32_t length, sockaddr_storage& native, 
     const auto* bytes = static_cast<const unsigned char*>(input);
     if (bytes[1] == 2 && length >= 16) {
         auto& v4 = reinterpret_cast<sockaddr_in&>(native);
+#ifdef __APPLE__
+        v4.sin_len = sizeof(v4);
+#endif
         v4.sin_family = AF_INET;
         std::memcpy(&v4.sin_port, bytes + 2, 2);
         std::memcpy(&v4.sin_addr, bytes + 4, 4);
@@ -125,6 +129,9 @@ bool Address(const void* input, std::uint32_t length, sockaddr_storage& native, 
     }
     if (bytes[1] == 28 && length >= 28) {
         auto& v6 = reinterpret_cast<sockaddr_in6&>(native);
+#ifdef __APPLE__
+        v6.sin6_len = sizeof(v6);
+#endif
         v6.sin6_family = AF_INET6;
         std::memcpy(&v6.sin6_port, bytes + 2, 2);
         std::memcpy(&v6.sin6_flowinfo, bytes + 4, 4);
@@ -348,6 +355,14 @@ int APS5_VABI ioctl_nid_postfix(int descriptor, std::uint64_t request, void* arg
 #else
     int nativeValue = static_cast<int>(value);
     const auto result = ::ioctl(socket->value, request == 0x8004667e ? FIONBIO : FIONREAD, &nativeValue);
+#ifdef __APPLE__
+    if (result == 0 && request == 0x4004667f && socket->type == 2 && nativeValue > 0) {
+        std::array<char, 65536> datagram{};
+        const auto bytes = ::recv(socket->value, datagram.data(), datagram.size(), MSG_PEEK);
+        if (bytes < 0) return Fail(NativeError());
+        nativeValue = static_cast<int>(bytes);
+    }
+#endif
     value = static_cast<unsigned long>(nativeValue);
 #endif
     if (result) return Fail(NativeError());

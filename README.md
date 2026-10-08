@@ -1,8 +1,8 @@
 # About
 
-Tool for automatic executables porting to Linux and Windows.
+Tool for automatically porting executables to Linux and Windows, with an experimental macOS x86-64 runtime.
 
-Includes a [relinker](core/relinker) that converts executable to the target system's native format and implementations of [system prx libraries](core/libs/prx) suitable for dynamic linking. No emulation or separate runtime process.
+Includes a [relinker](core/relinker) and implementations of [system prx libraries](core/libs/prx) suitable for dynamic linking. Linux and Windows outputs run as native programs. macOS executes relinked x86-64 guest code in-process through `anyps5-runner`; graphics use Vulkan over MoltenVK. Apple Silicon currently requires Rosetta 2.
 
 [Usage](docs/user/USAGE.md), [Build instructions](docs/dev/BUILD.md), [Architecture](docs/dev/ARCHITECTURE.md), [Technical debt of the project](docs/dev/TechnicalDebt.md), [code style conventions](docs/dev/CONVENTIONS.md), [contributing](CONTRIBUTING.md)
 
@@ -17,6 +17,8 @@ Includes a [relinker](core/relinker) that converts executable to the target syst
 [List of verified games](docs/user/COMPATIBILITY.md)
 
 Dreaming Sarah (2D platformer) runs at a stable 60 fps on a GTX 1050 Ti / i5-7500 3.4GHz.
+
+The macOS runtime, guest loader, TLS bridge, exception unwinder, and Metal-backed presentation path are covered by integration tests. Game compatibility and performance on macOS still require title-by-title verification.
 
 Unsupported or unexpected states strictly throw `std::runtime_error`. `what()` is printed to stderr and the process terminates.
 

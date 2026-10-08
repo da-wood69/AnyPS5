@@ -1,6 +1,8 @@
 #include <cstdlib>
 #include <array>
+#include <chrono>
 #include <future>
+#include <cstdio>
 #include <thread>
 #ifdef _WIN32
 #include <windows.h>
@@ -13,7 +15,12 @@ int main() {
     for (unsigned i = 0; i < 64; ++i) {
         std::thread worker([] { TouchHostThreadLocal(); TouchHostThreadLocal(); });
         worker.join();
-        if (DestroyedHostThreadLocals() != (i + 1) * 2) std::abort();
+        const auto actual = DestroyedHostThreadLocals();
+        if (actual != (i + 1) * 2) {
+            std::fprintf(stderr, "Host TLS destructor count at thread %u: %u, expected %u\n",
+                i, actual, (i + 1) * 2);
+            std::abort();
+        }
     }
 #ifdef _WIN32
     for (unsigned i = 0; i < 64; ++i) {
@@ -30,7 +37,15 @@ int main() {
             worker = std::async(std::launch::async, [] { TouchHostThreadLocal(); TouchHostThreadLocal(); });
         }
         for (auto& worker : workers) worker.get();
-        if (DestroyedHostThreadLocals() != before + 8) std::abort();
+        const auto expected = before + 8;
+        for (unsigned attempt = 0; attempt < 1000 && DestroyedHostThreadLocals() != expected; ++attempt)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        const auto actual = DestroyedHostThreadLocals();
+        if (actual != expected) {
+            std::fprintf(stderr, "Host TLS destructor count at async batch %u: %u, expected %u\n",
+                i, actual, expected);
+            std::abort();
+        }
     }
 
 }

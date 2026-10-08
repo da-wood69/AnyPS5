@@ -13,6 +13,7 @@
 #include <relinker/analysis/ValidationPolicy.hpp>
 #include <relinker/analysis/SyscallScanner.hpp>
 #include <relinker/analysis/CallSiteResolver.hpp>
+#include <relinker/analysis/MacTlsRewriter.hpp>
 #include <relinker/analysis/UnusedNidFilter.hpp>
 #include <relinker/output/SysVDynamicSectionBuilder.hpp>
 #include <relinker/output/CallRegistryWriter.hpp>
@@ -45,6 +46,12 @@ int main(const int argc, char* argv[]) {
 
         auto sourceBytes = fileReader.Read(args.inputPath);
         const std::string absPath = std::filesystem::absolute(args.outputPath).string();
+
+        if (args.toMacos) {
+            const auto headers = Relinker::ElfReader(sourceBytes).ReadProgramHeaders();
+            const auto rewritten = Relinker::MacTlsRewriter().Rewrite(sourceBytes, headers);
+            std::cout << "macOS TLS conversion: " << rewritten << " direct accesses\n";
+        }
 
         std::vector<Codegen::TrampolineSite> trampolines;
         if (args.toIntel) {
@@ -79,7 +86,7 @@ int main(const int argc, char* argv[]) {
             args.unusedFilterLevel
         );
 
-        std::cout << "System: " << (args.toWindows ? "Windows" : "Linux") << "; unused-filter=" << args.unusedFilterLevel << "\n";
+        std::cout << "System: " << (args.toWindows ? "Windows" : args.toMacos ? "macOS runner" : "Linux") << "; unused-filter=" << args.unusedFilterLevel << "\n";
         std::cout << "sce_module/sce_modules/prx processing: " << (args.skipSceModule ? "disabled (--skip-sce-module)" : "enabled") << '\n';
         for (const auto& name : args.excludedSceModules) std::cout << "Guest module excluded: " << name << '\n';
         auto result = pipeline->Relink(sourceBytes);
@@ -91,7 +98,7 @@ int main(const int argc, char* argv[]) {
 
         std::vector<Relinker::GuestArtifact> guestArtifacts;
         if (!args.skipSceModule) {
-            guestArtifacts = Relinker::GuestModuleBuilder().Build(args.inputPath, absPath, result.DynamicSection, args.toWindows, args.toIntel, *syscallScanner, args.lazyBinding, args.runPath, args.excludedSceModules);
+            guestArtifacts = Relinker::GuestModuleBuilder().Build(args.inputPath, absPath, result.DynamicSection, args.toWindows, args.toMacos, args.toIntel, *syscallScanner, args.lazyBinding, args.runPath, args.excludedSceModules);
         }
 
         if (args.writeRegistry) {
@@ -137,9 +144,13 @@ int main(const int argc, char* argv[]) {
         for (const auto& artifact : guestArtifacts)
             std::cout << "    " << artifact.Path.lexically_relative(std::filesystem::path(absPath).parent_path() / "app0").generic_string() << '\n';
         std::cout << "Game resources and system libraries must be placed in this layout separately.\n";
+        if (args.toMacos) std::cout << "Launch with: anyps5-runner " << std::filesystem::path(absPath).filename().string() << "\n";
         if (args.runPath != "$ORIGIN/libs") std::cout << "Custom library search path (--rpath): " << args.runPath << '\n';
 
-        if (args.autorun) return Cli::Autorun(absPath, args.toWindows);
+        if (args.autorun) {
+            if (args.toMacos) throw std::runtime_error("--autorun for macOS is not available yet; launch the output with anyps5-runner");
+            return Cli::Autorun(absPath, args.toWindows);
+        }
 
     } catch (const Domain::RelinkerException& e) {
         std::cerr << "FAIL: " << e.what();

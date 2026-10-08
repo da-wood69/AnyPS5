@@ -130,6 +130,9 @@ foreach(LIB_DIR ${LIBS_DIRS})
 endforeach()
 
 add_custom_target(libs DEPENDS ${PATCHED_OUTPUTS})
+if(APPLE)
+    add_custom_target(macos_runtime_libraries DEPENDS ${LIBC_PATCHED} ${PATCHED_DIR}/libkernel.prx)
+endif()
 
 if(BUILD_TESTING)
     add_test_executable(savedata_memory_metadata_tests tests/SaveDataMemoryMetadata.cpp)

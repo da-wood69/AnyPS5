@@ -27,7 +27,13 @@ Windows output:
 relinker --windows source/input.elf app.exe
 ```
 
-Add `--to-intel` for Intel hosts. The output format defaults to Linux ELF regardless of the filename; `.exe` alone does not select Windows.
+macOS runner output:
+
+```sh
+relinker --macos source/input.elf app.elf
+```
+
+Add `--to-intel` for Intel hosts. `--macos` enables it automatically because the macOS runtime is currently x86-64. The output format defaults to Linux ELF regardless of the filename; `.exe` alone does not select Windows.
 
 ## Options
 
@@ -36,6 +42,7 @@ All switches are disabled by default. `unused-filter` defaults to `0`; `--rpath`
 | Option                        | Effect                                                                                                                                                                                                                                                                                                                  |
 |-------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `--windows`                   | Produce a Windows PE executable.                                                                                                                                                                                                                                                                                        |
+| `--macos`                     | Produce an x86-64 ELF for `anyps5-runner`, rewrite supported PS5 direct TLS accesses for Darwin, and convert supported AMD-only instructions. Conflicts with `--windows`.                                                                                                                                                |
 | `--windows-diagnostics`       | Include startup dependency diagnostics. Requires `--windows`.                                                                                                                                                                                                                                                           |
 | `--windows-gui`               | Select the Windows GUI subsystem instead of the console subsystem. Requires `--windows`.                                                                                                                                                                                                                                |
 | `--to-intel`                  | Convert supported AMD-only instructions in the executable and bundled modules. Unsupported instructions or unreachable conversion stubs cause an error.                                                                                                                                                                 |
@@ -44,7 +51,7 @@ All switches are disabled by default. `unused-filter` defaults to `0`; `--rpath`
 | `unused-filter=2`             | Apply strict unused-import analysis and compact the PLT. Unsupported analysis cases cause an error.                                                                                                                                                                                                                     |
 | `--registry`                  | Write `<output-stem>.registry.json` beside the output executable.                                                                                                                                                                                                                                                       |
 | `--rpath <path>`              | Set the system library search path. Quote `$ORIGIN` to prevent shell expansion, for example `--rpath '$ORIGIN/libs'` in Bash or PowerShell. Linux guest modules require an absolute path or a path beginning with `$ORIGIN`. Windows requires a nonempty ASCII path and supports `$ORIGIN` as the executable directory. |
-| `--autorun`                   | Run the output after conversion, print its exit code, and wait for Enter. Adds executable permissions for Linux output. Requires the target OS and prepared runtime layout.                                                                                                                                             |
+| `--autorun`                   | Run the output after conversion, print its exit code, and wait for Enter. Adds executable permissions for Linux output. Requires the target OS and prepared runtime layout. It is not yet available with `--macos`.                                                                                                    |
 | `--skip-sce-module`           | Deprecated. Skip all bundled module processing.                                                                                                                                                                                                                                                                         |
 | `--exclude-sce-module <file>` | Deprecated. Exclude a bundled module by exact filename, not path. Repeat for multiple files; a missing filename is an error. Conflicts with `--skip-sce-module`.                                                                                                                                                        |
 | `--skip-syscall-check`        | Deprecated. Disable syscall scanning in the executable and bundled modules.                                                                                                                                                                                                                                             |
@@ -59,7 +66,9 @@ The `--skip-sce-module`, `--exclude-sce-module <file>`, `--skip-syscall-check`, 
 Paths are relative to the output executable:
 
 ```text
-app.elf (Linux) or app.exe (Windows)
+app.elf (Linux or macOS runner) or app.exe (Windows)
+anyps5-runner                  # macOS only
+libMoltenVK.dylib              # macOS only
 libs/
     *.prx
 app0/
@@ -71,6 +80,8 @@ app0/
 Use `sce_modules/` or `prx/` instead of `sce_module/` if that is the input directory name. Relinker preserves each module's directory under `app0/` and prints its exact path. Place app resources in `app0/` separately. Copy the built system libraries from `build/core/libs/libs/*.prx` into `libs/`; use libraries built for the target OS. A custom `--rpath` changes the system library location.
 
 Use the generated files printed as `Guest module:` for bundled title modules. `libs/` is for AnyPS5 system libraries, not the original PS5 `.prx` files. Placing an original PS5 module in `libs/` on Windows makes Windows try to load it as a DLL and can fail with error 193 (not a valid Win32 application).
+
+On macOS, use the Mach-O `.prx` files from the same x86-64 macOS build. Original title modules remain ELF and are emitted as `*.guest.prx` under `app0/`; `anyps5-runner` maps those modules in-process. Do not replace them with the original unprocessed files.
 
 On Windows, direct memory (`sceKernelAllocateDirectMemory`, up to 13824 MiB per title) is committed in full when the title allocates it, not when its pages are first used. The system commit limit (installed memory plus page file size, the second value of Committed in Task Manager) must cover it together with all other committed memory. Otherwise the allocation throws `create direct memory backing of 0x<n> bytes (<m> MiB)` with the Windows error; enlarge the page file or close other applications.
 
@@ -86,6 +97,14 @@ Windows PowerShell:
 ```powershell
 .\app.exe
 ```
+
+macOS:
+
+```sh
+./anyps5-runner ./app.elf
+```
+
+The packaged runner discovers `libMoltenVK.dylib` beside itself. For another installation, set `ANYPS5_VULKAN_LIBRARY` to an x86-64 or universal MoltenVK dynamic library. On Apple Silicon the runner and host `.prx` libraries execute through Rosetta 2; there is no arm64 guest translation yet.
 
 ### System fonts
 

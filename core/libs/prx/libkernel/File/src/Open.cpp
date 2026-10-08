@@ -120,7 +120,7 @@ int APS5_VABI sceKernelOpen(const char* path, int flags, std::uint16_t mode) {
 }
 
 int APS5_VABI sceKernelClose(int d) {
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__APPLE__)
     File::ForgetDirectoryDescriptor(d);
 #endif
     if (NativeClose(d) != 0) {
@@ -162,6 +162,9 @@ std::int64_t APS5_VABI sceKernelLseek(int d, std::int64_t offset, int whence) {
     if (result < 0) {
         throw std::runtime_error(std::string(__func__) + ": lseek failed, fd=" + std::to_string(d) + ", errno=" + std::to_string(errno));
     }
+#if defined(_WIN32) || defined(__APPLE__)
+    File::ResetDirectoryDescriptor(d);
+#endif
     return result;
 }
 

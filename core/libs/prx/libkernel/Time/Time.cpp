@@ -232,6 +232,7 @@ static int SleepForRequest(const KernelTimespec* rqtp, KernelTimespec* rmtp) {
     constexpr int guestInvalid = 22;
     if (rqtp == nullptr) return guestFault;
     if (rqtp->tv_nsec < 0 || rqtp->tv_nsec >= 1000000000LL) return guestInvalid;
+    const int savedError = errno;
     if (rqtp->tv_sec >= 0) {
         TimedWait::SleepNanos(static_cast<std::uint64_t>(rqtp->tv_sec) * 1000000000ULL +
                               static_cast<std::uint64_t>(rqtp->tv_nsec));
@@ -240,6 +241,7 @@ static int SleepForRequest(const KernelTimespec* rqtp, KernelTimespec* rmtp) {
         rmtp->tv_sec = 0;
         rmtp->tv_nsec = 0;
     }
+    errno = savedError;
     return 0;
 }
 

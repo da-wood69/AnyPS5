@@ -19,6 +19,9 @@
 #ifndef _WIN32
 #include <csetjmp>
 #include <pthread.h>
+#ifdef __APPLE__
+#include <dlfcn.h>
+#endif
 #endif
 
 static constexpr int SCE_OK = 0;
@@ -186,7 +189,22 @@ static void RunThread(std::unique_ptr<ThreadArgs> args) {
     currentThread = self;
     RegisterStack(self);
     args.reset();
-    finishThread(self, entry(arg));
+    void* result = nullptr;
+#ifdef __APPLE__
+    using GuestThreadCallback = void (*)();
+    const auto enterGuest = reinterpret_cast<GuestThreadCallback>(dlsym(RTLD_DEFAULT, "AnyPs5GuestThreadEnter"));
+    const auto leaveGuest = reinterpret_cast<GuestThreadCallback>(dlsym(RTLD_DEFAULT, "AnyPs5GuestThreadLeave"));
+    if ((enterGuest == nullptr) != (leaveGuest == nullptr)) throw std::runtime_error("Incomplete macOS guest TLS callbacks");
+    struct GuestTlsScope {
+        GuestThreadCallback leave;
+        GuestTlsScope(GuestThreadCallback enter, GuestThreadCallback leave) : leave(leave) { if (enter) enter(); }
+        ~GuestTlsScope() { if (leave) leave(); }
+    } guestTls(enterGuest, leaveGuest);
+    result = entry(arg);
+#else
+    result = entry(arg);
+#endif
+    finishThread(self, result);
     currentThread = nullptr;
 }
 

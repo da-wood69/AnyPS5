@@ -1,5 +1,6 @@
 #include "SceTypes.hpp"
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 
 extern "C" {
@@ -27,7 +28,13 @@ static constexpr std::int64_t SLEEP_NANOS = 50 * NANOS_PER_MILLISECOND;
 static constexpr std::int64_t EARLY_WAKE_MARGIN_NANOS = 5 * NANOS_PER_MILLISECOND;
 static constexpr std::int64_t NO_SLEEP_LIMIT_NANOS = 2 * NANOS_PER_SECOND;
 
-static void Require(bool value) { if (!value) std::abort(); }
+static void Check(bool value, int line) {
+    if (!value) {
+        std::fprintf(stderr, "Nanosleep check failed at line %d\n", line);
+        std::abort();
+    }
+}
+#define Require(value) Check((value), __LINE__)
 
 static std::int64_t MonotonicNanos() {
     KernelTimespec time{-1, -1};

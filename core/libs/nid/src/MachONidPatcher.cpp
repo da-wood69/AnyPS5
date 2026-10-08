@@ -17,6 +17,7 @@ constexpr std::uint32_t LoadSymtab = 0x2u;
 constexpr std::uint32_t LoadSegment64 = 0x19u;
 constexpr std::uint32_t LoadDyldInfoOnly = 0x80000022u;
 constexpr std::uint32_t LoadExportsTrie = 0x80000033u;
+constexpr std::uint32_t LoadDyldChainedFixups = 0x80000034u;
 constexpr std::uint8_t SymbolExternal = 0x1u;
 constexpr std::uint8_t SymbolTypeMask = 0x0eu;
 constexpr std::uint8_t SymbolUndefined = 0x0u;
@@ -65,6 +66,8 @@ struct ExportRange {
 struct MachLayout {
     SymtabCommand Symtab{};
     ExportRange Exports;
+    std::uint32_t ChainedFixupsOffset = 0;
+    std::uint32_t ChainedFixupsSize = 0;
     std::size_t LinkeditCommand = 0;
 };
 
@@ -114,6 +117,10 @@ MachLayout ReadLayout(const std::vector<std::uint8_t>& binary) {
                 layout.Exports.OffsetFields.push_back(offset + 8);
                 layout.Exports.SizeFields.push_back(offset + 12);
             }
+        } else if (command.Command == LoadDyldChainedFixups) {
+            if (command.Size < 16) throw std::runtime_error("invalid Mach-O chained-fixups command");
+            layout.ChainedFixupsOffset = Read<std::uint32_t>(binary, offset + 8);
+            layout.ChainedFixupsSize = Read<std::uint32_t>(binary, offset + 12);
         }
         offset += command.Size;
     }
@@ -122,6 +129,7 @@ MachLayout ReadLayout(const std::vector<std::uint8_t>& binary) {
     RequireRange(binary, layout.Symtab.SymbolOffset, std::uint64_t{layout.Symtab.SymbolCount} * sizeof(Nlist64));
     RequireRange(binary, layout.Symtab.StringOffset, layout.Symtab.StringSize);
     if (layout.Exports.Size != 0) RequireRange(binary, layout.Exports.Offset, layout.Exports.Size);
+    if (layout.ChainedFixupsSize != 0) RequireRange(binary, layout.ChainedFixupsOffset, layout.ChainedFixupsSize);
     return layout;
 }
 
@@ -282,6 +290,82 @@ std::vector<std::uint8_t> BuildTrie(const std::vector<TrieExport>& exports) {
     return result;
 }
 
+struct ChainedFixupsHeader {
+    std::uint32_t Version;
+    std::uint32_t StartsOffset;
+    std::uint32_t ImportsOffset;
+    std::uint32_t SymbolsOffset;
+    std::uint32_t ImportsCount;
+    std::uint32_t ImportsFormat;
+    std::uint32_t SymbolsFormat;
+};
+
+std::string ReplacementForImport(const std::string& name, const std::unordered_map<std::string, std::string>& mapped) {
+    if (name.empty() || name.front() != '_') return name;
+    const auto logical = name.substr(1);
+    if (const auto found = mapped.find(logical); found != mapped.end()) return "_" + found->second;
+    const bool sceName = logical.size() >= 3 && std::tolower(static_cast<unsigned char>(logical[0])) == 's' && std::tolower(static_cast<unsigned char>(logical[1])) == 'c' && std::tolower(static_cast<unsigned char>(logical[2])) == 'e';
+    if (logical.ends_with(Internal::kNidPostfix) || sceName) return "_" + ResolveOneName(logical);
+    return name;
+}
+
+void PatchChainedImports(std::vector<std::uint8_t>& binary, const MachLayout& layout, const std::unordered_map<std::string, std::string>& mapped) {
+    using Internal::Read;
+    using Internal::Write;
+    if (layout.ChainedFixupsSize == 0) return;
+    if (layout.ChainedFixupsSize < sizeof(ChainedFixupsHeader)) throw std::runtime_error("Mach-O chained fixups are too small");
+    const auto header = Read<ChainedFixupsHeader>(binary, layout.ChainedFixupsOffset);
+    if (header.Version != 0) throw std::runtime_error("unsupported Mach-O chained-fixups version");
+    if (header.SymbolsFormat != 0) throw std::runtime_error("compressed Mach-O chained-fixup symbols are unsupported");
+
+    std::size_t entrySize = 0;
+    if (header.ImportsFormat == 1) entrySize = 4;
+    else if (header.ImportsFormat == 2) entrySize = 8;
+    else if (header.ImportsFormat == 3) entrySize = 16;
+    else throw std::runtime_error("unsupported Mach-O chained-import format");
+
+    const auto fixupsBegin = std::size_t{layout.ChainedFixupsOffset};
+    const auto fixupsEnd = fixupsBegin + layout.ChainedFixupsSize;
+    const auto importsBegin = fixupsBegin + header.ImportsOffset;
+    const auto symbolsBegin = fixupsBegin + header.SymbolsOffset;
+    if (importsBegin > fixupsEnd || header.ImportsCount > (fixupsEnd - importsBegin) / entrySize) throw std::runtime_error("Mach-O chained imports are out of bounds");
+    if (symbolsBegin > fixupsEnd) throw std::runtime_error("Mach-O chained-import symbols are out of bounds");
+
+    std::vector<std::string> replacements;
+    replacements.reserve(header.ImportsCount);
+    for (std::uint32_t index = 0; index < header.ImportsCount; ++index) {
+        const auto entryOffset = importsBegin + std::size_t{index} * entrySize;
+        const auto word = entrySize >= 8 ? Read<std::uint64_t>(binary, entryOffset) : Read<std::uint32_t>(binary, entryOffset);
+        const auto nameOffset = header.ImportsFormat == 3 ? static_cast<std::uint32_t>(word >> 32) : static_cast<std::uint32_t>(word >> 9);
+        if (nameOffset >= fixupsEnd - symbolsBegin) throw std::runtime_error("Mach-O chained-import name is out of bounds");
+        replacements.push_back(ReplacementForImport(Internal::ReadCStr(binary, symbolsBegin + nameOffset), mapped));
+    }
+
+    std::vector<std::uint8_t> strings;
+    std::unordered_map<std::string, std::uint32_t> stringOffsets;
+    for (std::uint32_t index = 0; index < header.ImportsCount; ++index) {
+        auto [found, inserted] = stringOffsets.emplace(replacements[index], static_cast<std::uint32_t>(strings.size()));
+        if (inserted) {
+            strings.insert(strings.end(), replacements[index].begin(), replacements[index].end());
+            strings.push_back(0);
+        }
+        const auto entryOffset = importsBegin + std::size_t{index} * entrySize;
+        if (header.ImportsFormat == 3) {
+            auto word = Read<std::uint64_t>(binary, entryOffset);
+            word = (word & 0xffffffffu) | (std::uint64_t{found->second} << 32);
+            Write(binary, entryOffset, word);
+        } else {
+            if (found->second >= (std::uint32_t{1} << 23)) throw std::runtime_error("Mach-O chained-import name offset exceeds 23 bits");
+            auto word = Read<std::uint32_t>(binary, entryOffset);
+            word = (word & 0x1ffu) | (found->second << 9);
+            Write(binary, entryOffset, word);
+        }
+    }
+    if (strings.size() > fixupsEnd - symbolsBegin) throw std::runtime_error("rebuilt Mach-O chained-import strings exceed their original allocation");
+    std::copy(strings.begin(), strings.end(), binary.begin() + static_cast<std::ptrdiff_t>(symbolsBegin));
+    std::fill(binary.begin() + static_cast<std::ptrdiff_t>(symbolsBegin + strings.size()), binary.begin() + static_cast<std::ptrdiff_t>(fixupsEnd), 0);
+}
+
 }
 
 std::unordered_set<std::string> ReadMachOExports(const std::vector<std::uint8_t>& binary) {
@@ -303,6 +387,7 @@ void MachONidPatcher::PatchNids(std::vector<std::uint8_t>& binary, const std::st
         if (!hasAlias || Internal::IsNidNoPatchCut(symbol.Name)) names.push_back(symbol.Name);
     }
     const auto mapped = ResolveNids(names, libraryName, excludedExports);
+    PatchChainedImports(binary, layout, mapped);
 
     std::vector<std::string> replacements(layout.Symtab.SymbolCount);
     for (std::uint32_t index = 0; index < layout.Symtab.SymbolCount; ++index) {

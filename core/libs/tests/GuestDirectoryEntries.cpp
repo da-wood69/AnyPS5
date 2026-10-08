@@ -75,6 +75,9 @@ int main() {
         std::int64_t base = -1;
         const int read = sceKernelGetdirentries(directory, small.data(), static_cast<int>(small.size()), &base);
         Require(read >= 0 && read <= static_cast<int>(small.size()));
+        if (base < 0 || base == previousBase)
+            std::fprintf(stderr, "Directory base=%lld previous=%lld read=%d call=%d\n",
+                static_cast<long long>(base), static_cast<long long>(previousBase), read, calls);
         Require(base >= 0 && base != previousBase);
         if (calls == 0) Require(base == 0);
         previousBase = base;

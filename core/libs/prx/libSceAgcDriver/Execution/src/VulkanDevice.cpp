@@ -619,9 +619,10 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window) : state(std::make_u
         }
     }
 #ifdef __APPLE__
-    require(hasInstanceExtension(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME), "VK_KHR_portability_enumeration is unavailable");
-    instanceExtensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
-    create.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+    if (hasInstanceExtension(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) {
+        instanceExtensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+        create.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+    }
 #endif
     create.enabledExtensionCount = static_cast<std::uint32_t>(instanceExtensions.size());
     create.ppEnabledExtensionNames = instanceExtensions.data();

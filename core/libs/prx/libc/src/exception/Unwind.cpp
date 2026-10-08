@@ -1,17 +1,24 @@
 #include "prx/libc/include/exceptions/Unwind.hpp"
 #include "prx/libc/include/specifics/linux/ElfTypes.hpp"
 #include "prx/libc/src/specifics/x86_64/RegisterContext.cpp"
+#include <limits>
 
 #ifdef _WIN32
 #include <windows.h>
+#elif defined(__APPLE__)
+#include "SceTypes.hpp"
+#include <dlfcn.h>
+#include <mach-o/compact_unwind_encoding.h>
+#include <mach-o/dyld.h>
+#include <mach-o/loader.h>
+#include <mach/vm_prot.h>
 #endif
 
-#if defined(__linux__) || defined(_WIN32)
+#if defined(__linux__) || defined(_WIN32) || defined(__APPLE__)
 
-#if defined(_WIN32) || defined(__linux__)
 extern "C" _Unwind_Reason_Code __gxx_personality_v0(int, _Unwind_Action, std::uint64_t, _Unwind_Exception*, _Unwind_Context*);
 extern "C" _Unwind_Reason_Code __gcc_personality_v0(int, _Unwind_Action, std::uint64_t, _Unwind_Exception*, _Unwind_Context*);
-#endif
+extern "C" _Unwind_Reason_Code LibcGccPersonality(int, _Unwind_Action, std::uint64_t, _Unwind_Exception*, _Unwind_Context*);
 
 namespace LibcUnwind {
 _Unwind_Reason_Code CallPersonality(Word personality, _Unwind_Action actions, _Unwind_Exception* exception, _Unwind_Context* context) {
@@ -23,13 +30,214 @@ _Unwind_Reason_Code CallPersonality(Word personality, _Unwind_Action actions, _U
         std::memcpy(&personality, code + 6 + displacement, sizeof(personality));
     }
 #endif
+
     if (personality == reinterpret_cast<Word>(__gxx_personality_v0_nid_postfix) || personality == reinterpret_cast<Word>(__gxx_personality_v0))
         return __gxx_personality_v0_nid_postfix(1, actions, exception->exception_class, exception, context);
     if (personality == reinterpret_cast<Word>(__gcc_personality_v0))
-        return __gcc_personality_v0(1, actions, exception->exception_class, exception, context);
+        return LibcGccPersonality(1, actions, exception->exception_class, exception, context);
     return (actions & _UA_SEARCH_PHASE) ? _URC_FATAL_PHASE1_ERROR : _URC_FATAL_PHASE2_ERROR;
 }
 struct Lookup { Word pc; const Byte* fde {}; Word text {}; Word data {}; };
+
+#ifdef __APPLE__
+struct AppleFrameRange {
+    const Byte* ehBegin{};
+    const Byte* ehEnd{};
+    const Byte* compactBegin{};
+    const Byte* compactEnd{};
+    Word imageBase{};
+    Word text{};
+    Word data{};
+};
+
+bool FindAppleFrameRange(Word pc, AppleFrameRange& range) {
+    using GuestModuleInfo = int (*)(std::uint64_t, ModuleInfoEx*);
+    static const auto guestModuleInfo = reinterpret_cast<GuestModuleInfo>(dlsym(RTLD_DEFAULT, "AnyPs5GuestModuleInfo"));
+    if (guestModuleInfo) {
+        ModuleInfoEx info{};
+        info.st_size = sizeof(info);
+        if (guestModuleInfo(pc, &info) == 0 && info.eh_frame_addr != 0 && info.eh_frame_size != 0) {
+            range.ehBegin = reinterpret_cast<const Byte*>(info.eh_frame_addr);
+            range.ehEnd = range.ehBegin + info.eh_frame_size;
+            for (std::size_t index = 0; index < info.segment_count; ++index) {
+                if ((info.segments[index].prot & 4) != 0 && range.text == 0) range.text = info.segments[index].address;
+                if ((info.segments[index].prot & 2) != 0 && range.data == 0) range.data = info.segments[index].address;
+            }
+            return true;
+        }
+    }
+    for (std::uint32_t imageIndex = 0; imageIndex < _dyld_image_count(); ++imageIndex) {
+        const auto* header = reinterpret_cast<const mach_header_64*>(_dyld_get_image_header(imageIndex));
+        if (!header || header->magic != MH_MAGIC_64) continue;
+        range.imageBase = reinterpret_cast<Word>(header);
+        const auto slide = _dyld_get_image_vmaddr_slide(imageIndex);
+        bool contains = false;
+        auto* command = reinterpret_cast<const load_command*>(reinterpret_cast<const Byte*>(header) + sizeof(*header));
+        for (std::uint32_t commandIndex = 0; commandIndex < header->ncmds; ++commandIndex) {
+            if (command->cmd == LC_SEGMENT_64 && command->cmdsize >= sizeof(segment_command_64)) {
+                const auto* segment = reinterpret_cast<const segment_command_64*>(command);
+                const auto address = static_cast<Word>(static_cast<std::intptr_t>(segment->vmaddr) + slide);
+                if (segment->vmsize != 0 && pc >= address && pc - address < segment->vmsize) contains = true;
+            }
+            command = reinterpret_cast<const load_command*>(reinterpret_cast<const Byte*>(command) + command->cmdsize);
+        }
+        if (!contains) continue;
+        command = reinterpret_cast<const load_command*>(reinterpret_cast<const Byte*>(header) + sizeof(*header));
+        for (std::uint32_t commandIndex = 0; commandIndex < header->ncmds; ++commandIndex) {
+            if (command->cmd == LC_SEGMENT_64 && command->cmdsize >= sizeof(segment_command_64)) {
+                const auto* segment = reinterpret_cast<const segment_command_64*>(command);
+                const auto address = static_cast<Word>(static_cast<std::intptr_t>(segment->vmaddr) + slide);
+                if ((segment->initprot & VM_PROT_EXECUTE) != 0 && range.text == 0) range.text = address;
+                if ((segment->initprot & VM_PROT_WRITE) != 0 && range.data == 0) range.data = address;
+                const auto sectionBytes = static_cast<std::uint64_t>(segment->nsects) * sizeof(section_64);
+                if (sizeof(*segment) + sectionBytes <= command->cmdsize) {
+                    const auto* sections = reinterpret_cast<const section_64*>(segment + 1);
+                    for (std::uint32_t sectionIndex = 0; sectionIndex < segment->nsects; ++sectionIndex) {
+                        const auto section = reinterpret_cast<const Byte*>(static_cast<std::intptr_t>(sections[sectionIndex].addr) + slide);
+                        if (std::strncmp(sections[sectionIndex].sectname, "__eh_frame", sizeof(sections[sectionIndex].sectname)) == 0) {
+                            range.ehBegin = section;
+                            range.ehEnd = section + sections[sectionIndex].size;
+                        } else if (std::strncmp(sections[sectionIndex].sectname, "__unwind_info", sizeof(sections[sectionIndex].sectname)) == 0) {
+                            range.compactBegin = section;
+                            range.compactEnd = section + sections[sectionIndex].size;
+                        }
+                    }
+                }
+            }
+            command = reinterpret_cast<const load_command*>(reinterpret_cast<const Byte*>(command) + command->cmdsize);
+        }
+        return (range.ehBegin != nullptr && range.ehEnd > range.ehBegin) ||
+            (range.compactBegin != nullptr && range.compactEnd > range.compactBegin);
+    }
+    return false;
+}
+
+struct AppleCompactInfo {
+    std::uint32_t encoding{};
+    Word functionStart{};
+    Word personality{};
+    Word lsda{};
+};
+
+template<class T>
+const T* AppleTable(const AppleFrameRange& range, std::uint32_t offset, std::size_t count = 1) {
+    if (!range.compactBegin || range.compactEnd < range.compactBegin ||
+        offset > static_cast<std::size_t>(range.compactEnd - range.compactBegin) ||
+        count > (static_cast<std::size_t>(range.compactEnd - range.compactBegin) - offset) / sizeof(T)) return nullptr;
+    return reinterpret_cast<const T*>(range.compactBegin + offset);
+}
+
+bool FindAppleCompact(Word pc, const AppleFrameRange& range, AppleCompactInfo& result) {
+    if (!range.compactBegin || range.imageBase == 0 || pc < range.imageBase || pc - range.imageBase > std::numeric_limits<std::uint32_t>::max()) return false;
+    const auto* header = AppleTable<unwind_info_section_header>(range, 0);
+    if (!header || header->version != UNWIND_SECTION_VERSION || header->indexCount < 2) return false;
+    const auto* indexes = AppleTable<unwind_info_section_header_index_entry>(range, header->indexSectionOffset, header->indexCount);
+    if (!indexes) return false;
+    const auto target = static_cast<std::uint32_t>(pc - range.imageBase);
+    std::uint32_t first = 0;
+    std::uint32_t last = header->indexCount - 1;
+    while (first + 1 < last) {
+        const auto middle = first + (last - first) / 2;
+        if (indexes[middle].functionOffset <= target) first = middle;
+        else last = middle;
+    }
+    if (indexes[first].functionOffset > target || indexes[first].secondLevelPagesSectionOffset == 0) return false;
+    const auto pageOffset = indexes[first].secondLevelPagesSectionOffset;
+    const auto* kind = AppleTable<std::uint32_t>(range, pageOffset);
+    if (!kind) return false;
+    std::uint32_t encoding = 0;
+    std::uint32_t functionOffset = 0;
+    if (*kind == UNWIND_SECOND_LEVEL_REGULAR) {
+        const auto* page = AppleTable<unwind_info_regular_second_level_page_header>(range, pageOffset);
+        if (!page || page->entryCount == 0 || pageOffset > std::numeric_limits<std::uint32_t>::max() - page->entryPageOffset) return false;
+        const auto* entries = AppleTable<unwind_info_regular_second_level_entry>(range, pageOffset + page->entryPageOffset, page->entryCount);
+        if (!entries || entries[0].functionOffset > target) return false;
+        std::uint32_t low = 0;
+        std::uint32_t high = page->entryCount;
+        while (low + 1 < high) {
+            const auto middle = low + (high - low) / 2;
+            if (entries[middle].functionOffset <= target) low = middle;
+            else high = middle;
+        }
+        encoding = entries[low].encoding;
+        functionOffset = entries[low].functionOffset;
+        if ((encoding & UNWIND_IS_NOT_FUNCTION_START) != 0) {
+            if (low == 0) return false;
+            do --low; while (low != 0 && (entries[low].encoding & UNWIND_IS_NOT_FUNCTION_START) != 0);
+            functionOffset = entries[low].functionOffset;
+        }
+    } else if (*kind == UNWIND_SECOND_LEVEL_COMPRESSED) {
+        const auto* page = AppleTable<unwind_info_compressed_second_level_page_header>(range, pageOffset);
+        if (!page || page->entryCount == 0 || pageOffset > std::numeric_limits<std::uint32_t>::max() - page->entryPageOffset) return false;
+        const auto* entries = AppleTable<std::uint32_t>(range, pageOffset + page->entryPageOffset, page->entryCount);
+        if (!entries || target < indexes[first].functionOffset) return false;
+        const auto pageTarget = target - indexes[first].functionOffset;
+        if (UNWIND_INFO_COMPRESSED_ENTRY_FUNC_OFFSET(entries[0]) > pageTarget) return false;
+        std::uint32_t low = 0;
+        std::uint32_t high = page->entryCount;
+        while (low + 1 < high) {
+            const auto middle = low + (high - low) / 2;
+            if (UNWIND_INFO_COMPRESSED_ENTRY_FUNC_OFFSET(entries[middle]) <= pageTarget) low = middle;
+            else high = middle;
+        }
+        const auto encodingAt = [&](std::uint32_t index, std::uint32_t& output) {
+            const auto encodingIndex = UNWIND_INFO_COMPRESSED_ENTRY_ENCODING_INDEX(entries[index]);
+            if (encodingIndex < header->commonEncodingsArrayCount) {
+                const auto* common = AppleTable<std::uint32_t>(range, header->commonEncodingsArraySectionOffset, header->commonEncodingsArrayCount);
+                if (!common) return false;
+                output = common[encodingIndex];
+                return true;
+            }
+            const auto localIndex = encodingIndex - header->commonEncodingsArrayCount;
+            if (localIndex >= page->encodingsCount || pageOffset > std::numeric_limits<std::uint32_t>::max() - page->encodingsPageOffset) return false;
+            const auto* local = AppleTable<std::uint32_t>(range, pageOffset + page->encodingsPageOffset, page->encodingsCount);
+            if (!local) return false;
+            output = local[localIndex];
+            return true;
+        };
+        if (!encodingAt(low, encoding)) return false;
+        functionOffset = indexes[first].functionOffset + UNWIND_INFO_COMPRESSED_ENTRY_FUNC_OFFSET(entries[low]);
+        if ((encoding & UNWIND_IS_NOT_FUNCTION_START) != 0) {
+            if (low == 0) return false;
+            std::uint32_t previousEncoding = 0;
+            do {
+                --low;
+                if (!encodingAt(low, previousEncoding)) return false;
+            } while (low != 0 && (previousEncoding & UNWIND_IS_NOT_FUNCTION_START) != 0);
+            functionOffset = indexes[first].functionOffset + UNWIND_INFO_COMPRESSED_ENTRY_FUNC_OFFSET(entries[low]);
+        }
+    } else return false;
+    result.encoding = encoding;
+    result.functionStart = range.imageBase + functionOffset;
+    if ((encoding & UNWIND_HAS_LSDA) != 0) {
+        const auto begin = indexes[first].lsdaIndexArraySectionOffset;
+        const auto end = indexes[first + 1].lsdaIndexArraySectionOffset;
+        if (end < begin || (end - begin) % sizeof(unwind_info_section_header_lsda_index_entry) != 0) return false;
+        const auto count = (end - begin) / sizeof(unwind_info_section_header_lsda_index_entry);
+        const auto* entries = AppleTable<unwind_info_section_header_lsda_index_entry>(range, begin, count);
+        if (!entries) return false;
+        std::uint32_t low = 0;
+        std::uint32_t high = count;
+        while (low < high) {
+            const auto middle = low + (high - low) / 2;
+            if (entries[middle].functionOffset < functionOffset) low = middle + 1;
+            else high = middle;
+        }
+        if (low >= count || entries[low].functionOffset != functionOffset) return false;
+        result.lsda = range.imageBase + entries[low].lsdaOffset;
+    }
+    auto personality = (encoding & UNWIND_PERSONALITY_MASK) >> 28;
+    if (personality != 0) {
+        --personality;
+        if (personality >= header->personalityArrayCount) return false;
+        const auto* deltas = AppleTable<std::int32_t>(range, header->personalityArraySectionOffset, header->personalityArrayCount);
+        if (!deltas) return false;
+        const auto pointer = static_cast<Word>(static_cast<std::intptr_t>(range.imageBase) + deltas[personality]);
+        std::memcpy(&result.personality, reinterpret_cast<const void*>(pointer), sizeof(result.personality));
+    }
+    return true;
+}
+#endif
 
 #ifdef __linux__
 int FindFrame(dl_phdr_info* info, std::size_t, void* argument) {
@@ -77,6 +285,10 @@ struct Frame {
     std::intptr_t dataAlign {};
     unsigned returnRegister {};
     bool signal {};
+#ifdef __APPLE__
+    std::uint32_t compactEncoding {};
+    Word compactFunctionStart {};
+#endif
 };
 
 bool DecodeCandidate(_Unwind_Context& context, Frame& frame, const Lookup& query) {
@@ -144,7 +356,7 @@ bool DecodeFrame(_Unwind_Context& context, Frame& frame) {
 #ifdef __linux__
     dl_iterate_phdr(FindFrame, &query);
     return DecodeCandidate(context, frame, query);
-#else
+#elif defined(_WIN32)
     MEMORY_BASIC_INFORMATION memory{};
     if (!VirtualQuery(reinterpret_cast<void*>(query.pc), &memory, sizeof(memory)) || memory.Type != MEM_IMAGE)
         return false;
@@ -193,6 +405,51 @@ bool DecodeFrame(_Unwind_Context& context, Frame& frame) {
             }
             p = next;
         }
+    }
+    return false;
+#else
+    AppleFrameRange range;
+    if (!FindAppleFrameRange(query.pc, range)) return false;
+    query.text = range.text;
+    query.data = range.data;
+    AppleCompactInfo compact;
+    if (FindAppleCompact(query.pc, range, compact)) {
+        if ((compact.encoding & UNWIND_X86_64_MODE_MASK) == UNWIND_X86_64_MODE_DWARF) {
+            const auto offset = compact.encoding & UNWIND_X86_64_DWARF_SECTION_OFFSET;
+            if (!range.ehBegin || offset >= static_cast<Word>(range.ehEnd - range.ehBegin)) return false;
+            query.fde = range.ehBegin + offset;
+            return DecodeCandidate(context, frame, query);
+        }
+        frame.compactEncoding = compact.encoding;
+        frame.compactFunctionStart = compact.functionStart;
+        frame.personality = compact.personality;
+        frame.lsda = compact.lsda;
+        frame.start = compact.functionStart;
+        context.region = frame.start;
+        context.lsda = frame.lsda;
+        context.personality = frame.personality;
+        context.textBase = query.text;
+        context.dataBase = query.data;
+        return true;
+    }
+    if (!range.ehBegin || !range.ehEnd) return false;
+    const Byte* record = range.ehBegin;
+    while (range.ehEnd - record >= 8) {
+        const Byte* position = record;
+        const auto length = Read<std::uint32_t>(position);
+        if (length == 0) break;
+        if (length == 0xffffffffu || length < sizeof(std::uint32_t) || static_cast<Word>(range.ehEnd - position) < length) return false;
+        const Byte* next = position + length;
+        const auto cie = Read<std::uint32_t>(position);
+        if (cie != 0) {
+            query.fde = record;
+            Frame candidate{};
+            if (DecodeCandidate(context, candidate, query)) {
+                frame = candidate;
+                return true;
+            }
+        }
+        record = next;
     }
     return false;
 #endif
@@ -313,8 +570,135 @@ bool Expression(const Byte* p, const _Unwind_Context& context, Word cfa, Word& r
     result = stack[0]; return true;
 }
 
+#ifdef __APPLE__
+unsigned AppleRegisterIndex(unsigned compactRegister) {
+    switch (compactRegister) {
+    case UNWIND_X86_64_REG_RBX: return 3;
+    case UNWIND_X86_64_REG_R12: return 12;
+    case UNWIND_X86_64_REG_R13: return 13;
+    case UNWIND_X86_64_REG_R14: return 14;
+    case UNWIND_X86_64_REG_R15: return 15;
+    case UNWIND_X86_64_REG_RBP: return 6;
+    default: return 17;
+    }
+}
+
+bool AppleFramelessStackSize(const _Unwind_Context& context, const Frame& frame, Word& stackSize) {
+    const auto encoded = (frame.compactEncoding & UNWIND_X86_64_FRAMELESS_STACK_SIZE) >> 16;
+    stackSize = static_cast<Word>(encoded) * 8;
+    if ((frame.compactEncoding & UNWIND_X86_64_MODE_MASK) == UNWIND_X86_64_MODE_STACK_IND) {
+        std::uint32_t immediate = 0;
+        std::memcpy(&immediate, reinterpret_cast<const void*>(frame.compactFunctionStart + encoded), sizeof(immediate));
+        stackSize = immediate + static_cast<Word>((frame.compactEncoding & UNWIND_X86_64_FRAMELESS_STACK_ADJUST) >> 13) * 8;
+    }
+    return stackSize >= 8 && context.registers[7] <= std::numeric_limits<Word>::max() - stackSize;
+}
+
+bool AppleCompactCfa(const _Unwind_Context& context, const Frame& frame, Word& cfa) {
+    const auto mode = frame.compactEncoding & UNWIND_X86_64_MODE_MASK;
+    if (mode == UNWIND_X86_64_MODE_RBP_FRAME) {
+        if (context.registers[6] > std::numeric_limits<Word>::max() - 16) return false;
+        cfa = context.registers[6] + 16;
+        return true;
+    }
+    if (mode == UNWIND_X86_64_MODE_STACK_IMMD || mode == UNWIND_X86_64_MODE_STACK_IND) {
+        Word stackSize = 0;
+        if (!AppleFramelessStackSize(context, frame, stackSize)) return false;
+        cfa = context.registers[7] + stackSize;
+        return true;
+    }
+    return false;
+}
+
+bool AppleCompactStep(_Unwind_Context& context, const Frame& frame) {
+    _Unwind_Context next = context;
+    const auto mode = frame.compactEncoding & UNWIND_X86_64_MODE_MASK;
+    if (mode == UNWIND_X86_64_MODE_RBP_FRAME) {
+        const auto rbp = context.registers[6];
+        const auto offset = (frame.compactEncoding & UNWIND_X86_64_RBP_FRAME_OFFSET) >> 16;
+        if (rbp < static_cast<Word>(offset) * 8 || rbp > std::numeric_limits<Word>::max() - 16) return false;
+        auto saved = rbp - static_cast<Word>(offset) * 8;
+        auto registers = frame.compactEncoding & UNWIND_X86_64_RBP_FRAME_REGISTERS;
+        for (unsigned index = 0; index < 5; ++index) {
+            const auto compactRegister = registers & 7;
+            if (compactRegister != UNWIND_X86_64_REG_NONE) {
+                const auto native = AppleRegisterIndex(compactRegister);
+                if (native >= 17) return false;
+                std::memcpy(&next.registers[native], reinterpret_cast<const void*>(saved), sizeof(Word));
+            }
+            saved += sizeof(Word);
+            registers >>= 3;
+        }
+        std::memcpy(&next.registers[6], reinterpret_cast<const void*>(rbp), sizeof(Word));
+        std::memcpy(&next.registers[16], reinterpret_cast<const void*>(rbp + 8), sizeof(Word));
+        next.registers[7] = rbp + 16;
+    } else if (mode == UNWIND_X86_64_MODE_STACK_IMMD || mode == UNWIND_X86_64_MODE_STACK_IND) {
+        Word stackSize = 0;
+        if (!AppleFramelessStackSize(context, frame, stackSize)) return false;
+        const auto count = (frame.compactEncoding & UNWIND_X86_64_FRAMELESS_STACK_REG_COUNT) >> 10;
+        if (count > 6 || stackSize < 8 + static_cast<Word>(count) * 8) return false;
+        auto permutation = frame.compactEncoding & UNWIND_X86_64_FRAMELESS_STACK_REG_PERMUTATION;
+        unsigned compressed[6]{};
+        switch (count) {
+        case 6:
+        case 5:
+            compressed[0] = permutation / 120; permutation -= compressed[0] * 120;
+            compressed[1] = permutation / 24; permutation -= compressed[1] * 24;
+            compressed[2] = permutation / 6; permutation -= compressed[2] * 6;
+            compressed[3] = permutation / 2; permutation -= compressed[3] * 2;
+            compressed[4] = permutation;
+            break;
+        case 4:
+            compressed[0] = permutation / 60; permutation -= compressed[0] * 60;
+            compressed[1] = permutation / 12; permutation -= compressed[1] * 12;
+            compressed[2] = permutation / 3; permutation -= compressed[2] * 3;
+            compressed[3] = permutation;
+            break;
+        case 3:
+            compressed[0] = permutation / 20; permutation -= compressed[0] * 20;
+            compressed[1] = permutation / 4; permutation -= compressed[1] * 4;
+            compressed[2] = permutation;
+            break;
+        case 2:
+            compressed[0] = permutation / 5; permutation -= compressed[0] * 5;
+            compressed[1] = permutation;
+            break;
+        case 1: compressed[0] = permutation; break;
+        }
+        bool used[7]{};
+        unsigned restored[6]{};
+        for (unsigned index = 0; index < count; ++index) {
+            unsigned available = 0;
+            for (unsigned candidate = 1; candidate < 7; ++candidate) {
+                if (used[candidate]) continue;
+                if (available++ != compressed[index]) continue;
+                restored[index] = candidate;
+                used[candidate] = true;
+                break;
+            }
+            if (restored[index] == 0) return false;
+        }
+        auto saved = context.registers[7] + stackSize - 8 - static_cast<Word>(count) * 8;
+        for (unsigned index = 0; index < count; ++index) {
+            const auto native = AppleRegisterIndex(restored[index]);
+            if (native >= 17) return false;
+            std::memcpy(&next.registers[native], reinterpret_cast<const void*>(saved), sizeof(Word));
+            saved += sizeof(Word);
+        }
+        std::memcpy(&next.registers[16], reinterpret_cast<const void*>(saved), sizeof(Word));
+        next.registers[7] = saved + 8;
+    } else return false;
+    if (next.registers[16] == 0 || (next.registers[7] == context.registers[7] && next.registers[16] == context.registers[16])) return false;
+    context = next;
+    return true;
+}
+#endif
+
 bool GetRules(_Unwind_Context& context, Frame& frame, Rules& rules) {
     if (!DecodeFrame(context, frame)) return false;
+#ifdef __APPLE__
+    if (frame.compactEncoding != 0) return AppleCompactCfa(context, frame, context.cfa);
+#endif
     Rules initial;
     if (!Instructions(frame.cieBegin, frame.cieEnd, frame, ~Word(0), initial, {})) return false;
 #ifdef _WIN32
@@ -335,6 +719,9 @@ bool GetRules(_Unwind_Context& context, Frame& frame, Rules& rules) {
 bool Step(_Unwind_Context& context) {
     Frame frame; Rules rules;
     if (!GetRules(context, frame, rules)) return false;
+#ifdef __APPLE__
+    if (frame.compactEncoding != 0) return AppleCompactStep(context, frame);
+#endif
     _Unwind_Context next = context;
     for (unsigned i = 0; i < 17; ++i) {
         const auto& rule = rules.registers[i];

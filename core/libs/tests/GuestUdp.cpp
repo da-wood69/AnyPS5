@@ -1,6 +1,7 @@
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include <array>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <thread>
@@ -37,7 +38,13 @@ extern "C" {
 std::int64_t APS5_VABI sendmsg_nid_postfix(int, const Msghdr*, int);
 std::int64_t APS5_VABI recvmsg_nid_postfix(int, Msghdr*, int);
 }
-static void Require(bool value) { if (!value) std::abort(); }
+static void Check(bool value, int line) {
+    if (!value) {
+        std::fprintf(stderr, "UDP check failed at line %d\n", line);
+        std::abort();
+    }
+}
+#define Require(value) Check((value), __LINE__)
 int main() {
     const int receiver = socket_nid_postfix(2, 2, 0);
     const int sender = socket_nid_postfix(2, 2, 17);
@@ -78,6 +85,7 @@ int main() {
         Require(ioctl_nid_postfix(receiver, 0x4004667f, &queued) == 0);
         if (!queued) std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
+    if (queued != sizeof(message)) std::fprintf(stderr, "UDP queued bytes=%d expected=%zu\n", queued, sizeof(message));
     Require(queued == sizeof(message));
     Require(recvfrom_nid_postfix(receiver, buffer, sizeof(buffer), 2, nullptr, nullptr) == sizeof(message));
     std::array<unsigned char, 16> source{};

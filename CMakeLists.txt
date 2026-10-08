@@ -89,6 +89,7 @@ add_subdirectory(core/Decoder/Jpeg)
 add_subdirectory(core/Decoder/Png)
 add_subdirectory(core/libs)
 add_subdirectory(core/relinker)
+add_subdirectory(core/runtime)
 
 if(BUILD_TESTING)
     find_package(Python3 QUIET COMPONENTS Interpreter)

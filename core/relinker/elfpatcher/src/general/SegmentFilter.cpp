@@ -4,6 +4,7 @@
 namespace Elfpatcher {
 
 bool SegmentFilter::_isSceSpecificSegment(const std::uint32_t type) const {
+    if (type == PT_GNU_EH_FRAME) return false;
     return type == PT_SCE_DYNLIBDATA
         || type == PT_OS_PROCPARAM
         || type == PT_OS_RELRO

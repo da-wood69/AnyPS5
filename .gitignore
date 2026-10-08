@@ -54,6 +54,8 @@ sqlce_wasm.js
 sqlce_wasm.wasm
 emsdk/
 build-wasm/
+/work/
+__pycache__/
 
 .idea/
 .vscode/

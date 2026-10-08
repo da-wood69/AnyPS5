@@ -533,6 +533,18 @@ if(BUILD_TESTING)
                 "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
         endif()
     endforeach()
+    if(APPLE)
+        add_test_executable(macos_vulkan_probe_tests tests/MacVulkanProbe.cpp)
+        target_include_directories(macos_vulkan_probe_tests PRIVATE
+                ${LIBS_INCLUDE_DIR}
+                ${CMAKE_SOURCE_DIR}/core/shader/recompiler
+                ${CMAKE_SOURCE_DIR}/3rdparty/Vulkan-Headers/include
+        )
+        target_link_libraries(macos_vulkan_probe_tests PRIVATE libSceAgcDriver SDL2-static libc)
+        set_target_properties(macos_vulkan_probe_tests PROPERTIES CXX_EXTENSIONS OFF)
+        add_test(NAME macos_vulkan_probe COMMAND macos_vulkan_probe_tests)
+        set_tests_properties(macos_vulkan_probe PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
 endif()
 
 option(AGC_BUILD_VISUAL_TEST "Enable the standalone AGC SPIR-V visual test" OFF)

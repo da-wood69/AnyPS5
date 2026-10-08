@@ -10,6 +10,8 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
 #endif
 #include "ShaderCacheVersion.hpp"
 #include <algorithm>
@@ -28,6 +30,7 @@
 #include <system_error>
 #include <thread>
 #include <type_traits>
+#include <vector>
 
 namespace ShaderRecompiler {
 
@@ -48,6 +51,14 @@ std::filesystem::path ShaderCacheDirectory() {
         executable.resize(executable.size() * 2);
     }
     return std::filesystem::path(executable).parent_path() / "shader_cache";
+#elif defined(__APPLE__)
+    const char* directory = std::getenv("ANYPS5_SHADER_CACHE_DIR");
+    if (directory != nullptr && *directory != '\0') return std::filesystem::path(directory);
+    std::uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size);
+    std::vector<char> executable(size);
+    if (_NSGetExecutablePath(executable.data(), &size) != 0) return {};
+    return std::filesystem::weakly_canonical(executable.data()).parent_path() / "shader_cache";
 #else
     const char* directory = std::getenv("ANYPS5_SHADER_CACHE_DIR");
     if (directory != nullptr && *directory != '\0') return std::filesystem::path(directory);

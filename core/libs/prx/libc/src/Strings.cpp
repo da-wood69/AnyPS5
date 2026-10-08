@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cwchar>
 #include <cstdio>
+#include <cerrno>
 #include <limits>
 
 #include "prx/libc/include/General.hpp"
@@ -83,19 +84,29 @@ size_t APS5_VABI strlcpy_nid_postfix(char* dest, const char* src, size_t size) {
 }
 
 std::int64_t APS5_VABI strtol_nid_postfix(const char* str, char** endptr, int base) {
-    return std::strtoll(str, endptr, base);
+    const int saved = errno;
+    char* end = nullptr;
+    const auto result = std::strtoll(str, &end, base);
+    if (end == str && errno == EINVAL) errno = saved;
+    if (endptr) *endptr = end;
+    return result;
 }
 
 std::uint64_t APS5_VABI strtoul_nid_postfix(const char* str, char** endptr, int base) {
-    return std::strtoull(str, endptr, base);
+    const int saved = errno;
+    char* end = nullptr;
+    const auto result = std::strtoull(str, &end, base);
+    if (end == str && errno == EINVAL) errno = saved;
+    if (endptr) *endptr = end;
+    return result;
 }
 
 long long APS5_VABI strtoll_nid_postfix(const char* str, char** endptr, int base) {
-    return std::strtoll(str, endptr, base);
+    return strtol_nid_postfix(str, endptr, base);
 }
 
 unsigned long long APS5_VABI strtoull_nid_postfix(const char* str, char** endptr, int base) {
-    return std::strtoull(str, endptr, base);
+    return strtoul_nid_postfix(str, endptr, base);
 }
 
 double APS5_VABI strtod_nid_postfix(const char* str, char** endptr) {

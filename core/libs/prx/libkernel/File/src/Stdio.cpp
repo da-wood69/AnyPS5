@@ -234,8 +234,10 @@ int APS5_VABI chmod_nid_postfix(const char* path, int mode) {
 
 int APS5_VABI close_nid_postfix(int d) {
     if (d >= GuestSockets::FirstDescriptor) return GuestSockets::Close(d);
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__APPLE__)
     File::ForgetDirectoryDescriptor(d);
+#endif
+#ifdef _WIN32
     return _close(d);
 #else
     return ::close(d);
@@ -405,13 +407,12 @@ int APS5_VABI sceKernelFsync(int fd) {
 #endif
 }
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__APPLE__)
 
 int APS5_VABI sceKernelGetdirentries(int fd, char* buf, int nbytes, int64_t* basep) {
     if (buf == nullptr) return SceErrorFromErrno(GUEST_EFAULT);
     if (nbytes <= 0) return SceErrorFromErrno(GUEST_EINVAL);
-    if (basep != nullptr) *basep = 0;
-    return File::ReadDirectoryDescriptor(fd, buf, nbytes);
+    return File::ReadDirectoryDescriptor(fd, buf, nbytes, basep);
 }
 
 int APS5_VABI sceKernelGetdents(int fd, char* buf, int nbytes) {
@@ -429,21 +430,12 @@ int APS5_VABI sceKernelGetdirentries(int fd, char* buf, int nbytes, int64_t* bas
     if (base < 0) return SceErrorFromErrno(errno);
     if (basep != nullptr) *basep = static_cast<int64_t>(base);
     std::vector<char> host(static_cast<std::size_t>(nbytes) < 4096 ? 4096 : static_cast<std::size_t>(nbytes));
-#ifdef __APPLE__
-    off_t kernelBase = base;
-    const auto read = ::syscall(SYS_getdirentries64, fd, host.data(), host.size(), &kernelBase);
-#else
     const auto read = ::syscall(SYS_getdents64, fd, host.data(), host.size());
-#endif
     if (read < 0) return SceErrorFromErrno(errno);
     std::size_t written = 0;
     off_t resume = base;
     for (long offset = 0; offset < read;) {
-#ifdef __APPLE__
-        const auto* entry = reinterpret_cast<const struct dirent*>(host.data() + offset);
-#else
         const auto* entry = reinterpret_cast<const struct dirent64*>(host.data() + offset);
-#endif
         const auto nameLength = std::strlen(entry->d_name);
         const auto record = (GuestHeaderBytes + nameLength + 1 + 3) & ~std::size_t{3};
         if (nameLength > GuestMaxName || written + record > static_cast<std::size_t>(nbytes)) {
@@ -462,11 +454,7 @@ int APS5_VABI sceKernelGetdirentries(int fd, char* buf, int nbytes, int64_t* bas
         out[7] = static_cast<char>(nameBytes);
         std::memcpy(out + GuestHeaderBytes, entry->d_name, nameLength);
         written += record;
-#ifdef __APPLE__
-        resume = static_cast<off_t>(entry->d_seekoff);
-#else
         resume = entry->d_off;
-#endif
         offset += entry->d_reclen;
     }
     if (::lseek(fd, resume, SEEK_SET) < 0) return SceErrorFromErrno(errno);
