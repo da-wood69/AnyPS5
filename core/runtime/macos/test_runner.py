@@ -171,10 +171,12 @@ def guest_module_fixture():
 def unwind_metadata_fixture():
     """Build a sectionless ELF whose unwind range is only in PT_GNU_EH_FRAME."""
     image = dynamic_fixture()
-    struct.pack_into("<H", image, 56, 6)
+    # The relinker needs one spare input program-header slot to preserve PT_GNU_EH_FRAME after
+    # adding its synthetic headers.
+    struct.pack_into("<H", image, 56, 7)
     struct.pack_into("<IIQQQQQQ", image, 64 + 2 * 56,
                      0x6474E550, 4, 0x900, 0x900, 0x900, 8, 8, 4)
-    for index in range(3, 6):
+    for index in range(3, 7):
         struct.pack_into("<IIQQQQQQ", image, 64 + index * 56,
                          0x6FFFFF01, 0, 0, 0, 0, 0, 0, 1)
     strings = b"\0AnyPs5GuestModuleInfo\0"

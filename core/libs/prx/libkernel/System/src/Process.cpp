@@ -18,6 +18,7 @@
 #include "prx/libc/include/ApplicationHeap.hpp"
 #include "prx/libc/include/Shutdown.hpp"
 #include "prx/libkernel/DirectMemory/DirectMemory.hpp"
+#include "prx/libkernel/Pthread/include/Pthread.hpp"
 #include <array>
 #include <atomic>
 #include <cerrno>
@@ -120,6 +121,8 @@ struct GuestResourceUsage {
     std::int64_t ru_nivcsw;
 };
 
+extern "C" Pthread APS5_VABI scePthreadSelf();
+
 extern "C" {
 
 // unknown data
@@ -167,19 +170,19 @@ int APS5_VABI sceKernelGetCurrentCpu(void) {
             throw std::system_error(GetLastError(), std::system_category(), "Reading processor group size");
         index += count;
     }
-    return static_cast<int>(index);
 #elif defined(__APPLE__)
     std::size_t cpu = 0;
     const int error = pthread_cpu_number_np(&cpu);
     if (error != 0 || cpu > static_cast<std::size_t>(std::numeric_limits<int>::max()))
         throw std::system_error(error != 0 ? error : ERANGE, std::generic_category(), "Reading current processor");
-    return static_cast<int>(cpu);
+    const auto index = static_cast<unsigned>(cpu);
 #else
     const int cpu = ::sched_getcpu();
     if (cpu < 0)
         throw std::system_error(errno, std::generic_category(), "Reading current processor");
-    return cpu;
+    const auto index = static_cast<unsigned>(cpu);
 #endif
+    return GuestCpuFromHost(index, scePthreadSelf()->affinity.load(std::memory_order_relaxed));
 }
 
 std::uint64_t APS5_VABI sceKernelGetGPI(void) {
