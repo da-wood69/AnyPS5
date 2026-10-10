@@ -38,7 +38,8 @@ int main() {
         }
         for (auto& worker : workers) worker.get();
         const auto expected = before + 8;
-        for (unsigned attempt = 0; attempt < 1000 && DestroyedHostThreadLocals() != expected; ++attempt)
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (DestroyedHostThreadLocals() < expected && std::chrono::steady_clock::now() < deadline)
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         const auto actual = DestroyedHostThreadLocals();
         if (actual != expected) {

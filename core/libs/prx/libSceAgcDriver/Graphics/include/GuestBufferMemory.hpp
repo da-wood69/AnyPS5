@@ -27,11 +27,12 @@ struct HostImport {
     VkDeviceMemory memory;
     VkDeviceAddress address;
     void* alias = nullptr;
-    std::weak_ptr<const GuestAllocations::Range> range {};
+    std::shared_ptr<const GuestAllocations::Range> range {};
     // Identity for the life of this import (see HostImportSerial); 0 until first asked for.
     std::uint64_t serial = 0;
     bool unwatched = false;
     bool dmaBuf = false;
+    std::shared_ptr<void> chunk;
 };
 
 enum class ImportWatch : std::uint8_t { Watch, Unwatch };
@@ -182,13 +183,14 @@ public:
     // (DescriptorBinding::bufferWritten): the CPU never has to wait for it. `atomic` marks an
     // element the shader updates atomically (DescriptorBinding::bufferAtomic), staged in device
     // memory whatever its size (see AllowDeviceStaging).
-    void AddWritable(std::uint64_t address, std::size_t bytes, bool atomic = false);
+    void AddWritable(std::uint64_t address, std::size_t bytes, bool atomic = false, bool swept = false);
     void AddReadable(std::uint64_t address, std::size_t bytes);
     // Device-local staging of written and atomic elements inside host imports (see
     // GuestBufferMemory.cpp): allowed only for a build whose every use records its work and then
     // calls RecordCopyBacks (a dispatch), since a staged region's results reach guest memory by
     // that copy alone. Call before Upload.
     void AllowDeviceStaging() { stagingAllowed = true; }
+    void AllowAdjustedRegions() { adjustedRegions = true; }
     // Records the copy-in of every staged region anew for another use of this upload (a resource
     // cache hit, from ShaderResources::Revalidate, under GuestMemory::GpuMutex, once the imports
     // were confirmed unchanged): the previous use's copy-back left the shadow behind, and the next
@@ -250,6 +252,7 @@ public:
     // the GPU copies out of an import (gpuCopy) notes its read itself when the copy is recorded.
     // For the recorder's read tracking (ShaderResources::MarkGpuWrites); nothing once committed.
     std::vector<std::pair<std::uint64_t, std::uint64_t>> InPlaceReads() const;
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> DeviceReads() const;
 
 private:
     struct Region {
@@ -292,6 +295,7 @@ private:
         bool copiedBack = false;
         // An element the shader updates atomically lies inside (AddWritable's `atomic`).
         bool atomic = false;
+        bool swept = false;
         // The gpuCopy buffer is a device-local staging shadow (see stagingEligible): no host
         // mapping, so nothing is ever stored from it by the CPU, and the region is taken even when
         // the import could bind it in place.
@@ -325,7 +329,7 @@ private:
     // The region of a descriptor-bound range (AddWritable/AddReadable), committed pages only. A
     // range inside a base region of the space adds nothing: the region serves it, as today's merge
     // of the two did.
-    void addDescriptorRegion(std::uint64_t address, std::size_t bytes, bool atomic);
+    void addDescriptorRegion(std::uint64_t address, std::size_t bytes, bool atomic, bool swept);
     // Gives a region a buffer of its own with its bytes (guest memory for host-backed and writable
     // ranges, plus the write-back's reference copy for a range a descriptor writes; else its snapshot).
     void copyRegion(Region& region, bool addressable);
@@ -338,12 +342,14 @@ private:
     // and an atomic element or a size within the written-shadow window. Independent of the import,
     // so UploadPrepare and UploadFinish decide alike.
     bool stagingEligible(const Region& region, bool addressable) const;
+    bool bindableInPlace(std::uint64_t offset, bool addressable) const;
     // Records the import-to-buffer copies of the given gpuCopy regions into the open batch, with
     // the barriers that order them after earlier recorded writes and before the shaders reading them.
     void recordGpuCopies(std::span<Region* const> copies, bool addressable);
     void takeHeapReferences();
     Context context;
     bool stagingAllowed = false;
+    bool adjustedRegions = false;
     GuestAllocations::Lease lease;
     // The cached address space this build maps through (its lease pins the ranges); `regions` then
     // holds only the regions outside it (V#s, snapshots, ranges copied per build).

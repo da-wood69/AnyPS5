@@ -5,6 +5,7 @@
 #include <array>
 #include <bit>
 #include <cstdint>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -50,6 +51,28 @@ template <typename TFunction> bool foldU64Shift(IrBuilder& builder, IrValue& ins
         return false;
     }
     replaceWith(inst, builder.ConstantU64(static_cast<std::uint64_t>(function(value.ImmediateU64(), shift.ImmediateU32()))));
+    return true;
+}
+
+bool foldConstantBitTest(IrBuilder& builder, IrValue& inst) {
+    auto& left = resolveArg(inst, 0);
+    auto& right = resolveArg(inst, 1);
+    if (!isImmediate(right, IrType::U32) || right.ImmediateU32() != 0u || left.Opcode() != IrOpcode::BitwiseAnd32) return false;
+    auto& first = resolveArg(left, 0);
+    auto& second = resolveArg(left, 1);
+    IrValue* shifted = nullptr;
+    if (isImmediate(second, IrType::U32) && second.ImmediateU32() == 1u) shifted = &first;
+    else if (isImmediate(first, IrType::U32) && first.ImmediateU32() == 1u) shifted = &second;
+    if (shifted == nullptr || shifted->Opcode() != IrOpcode::ShiftRightLogical32) return false;
+    auto& word = resolveArg(*shifted, 0);
+    auto& amount = resolveArg(*shifted, 1);
+    if (!isImmediate(word, IrType::U32) || (word.ImmediateU32() != 0u && word.ImmediateU32() != 0xffffffffu)) return false;
+    if (amount.Opcode() != IrOpcode::BitwiseAnd32) return false;
+    auto& amountLeft = resolveArg(amount, 0);
+    auto& amountRight = resolveArg(amount, 1);
+    const bool masked = (isImmediate(amountLeft, IrType::U32) && amountLeft.ImmediateU32() == 31u) || (isImmediate(amountRight, IrType::U32) && amountRight.ImmediateU32() == 31u);
+    if (!masked) return false;
+    replaceWith(inst, builder.ConstantBool(word.ImmediateU32() != 0u));
     return true;
 }
 
@@ -184,23 +207,87 @@ bool foldCompositeExtract(IrBuilder& builder, IrValue& inst, IrOpcode construct,
     return false;
 }
 
-void collectUses(IrValue& value, std::vector<IrUse>& uses) {
-    for (const IrUse& use : value.OperandUses()) {
-        if (use.user->Opcode() == IrOpcode::Identity) {
-            collectUses(*use.user, uses);
+bool forwardsWord(const IrUse& use) {
+    return use.user->Opcode() == IrOpcode::Identity || use.user->Opcode() == IrOpcode::Phi || (use.user->Opcode() == IrOpcode::SelectU32 && use.operand != 0u);
+}
+
+void collectReaders(IrValue& value, std::vector<IrUse>& readers, std::vector<const IrValue*>& visited) {
+    if (std::ranges::find(visited, &value) != visited.end()) {
+        return;
+    }
+    visited.push_back(&value);
+    const std::vector<IrUse> uses = value.OperandUses();
+    for (const IrUse& use : uses) {
+        if (forwardsWord(use)) {
+            collectReaders(*use.user, readers, visited);
         } else {
-            uses.push_back(use);
+            readers.push_back(use);
         }
     }
 }
 
-bool lowerPackedAncillary(IrProgram& program, IrBuilder& builder, IrValue& ancillary) {
+void collectReaders(IrValue& value, std::vector<IrUse>& readers) {
+    std::vector<const IrValue*> visited;
+    collectReaders(value, readers, visited);
+}
+
+constexpr std::array<std::pair<std::uint32_t, std::uint32_t>, 2> packedFields {{{8u, 4u}, {16u, 13u}}};
+
+std::optional<std::size_t> packedField(std::uint32_t offset, std::uint32_t count) {
+    const auto field = std::ranges::find_if(packedFields, [&](const auto& candidate) {
+        return offset >= candidate.first && count <= candidate.second && offset - candidate.first <= candidate.second - count;
+    });
+    if (field == packedFields.end()) {
+        return std::nullopt;
+    }
+    return static_cast<std::size_t>(field - packedFields.begin());
+}
+
+void lowerPackedAncillary(IrProgram& program, IrBuilder& builder, IrValue& ancillary) {
     auto& kind = resolveArg(ancillary, 0);
     if (!isImmediate(kind, IrType::U32) || static_cast<StageInputKind>(kind.ImmediateU32()) != StageInputKind::PackedAncillary) {
-        return false;
+        return;
     }
-    std::vector<IrUse> uses;
-    collectUses(ancillary, uses);
+    const std::vector<IrUse> uses = ancillary.OperandUses();
+    std::vector<IrUse> direct;
+    std::vector<IrUse> forwarded;
+    for (const IrUse& use : uses) {
+        if (forwardsWord(use)) {
+            forwarded.push_back(use);
+        } else {
+            direct.push_back(use);
+        }
+    }
+    std::vector<IrUse> readers = direct;
+    for (const IrUse& use : forwarded) {
+        collectReaders(*use.user, readers);
+    }
+    const auto extractsField = [](const IrUse& use) {
+        const IrValue& user = *use.user;
+        if ((user.Opcode() != IrOpcode::BitFieldUExtract && user.Opcode() != IrOpcode::BitFieldSExtract) || use.operand != 0u) {
+            return false;
+        }
+        auto& offset = resolveArg(user, 1);
+        auto& count = resolveArg(user, 2);
+        return isImmediate(offset, IrType::U32) && isImmediate(count, IrType::U32) && count.ImmediateU32() != 0u &&
+               packedField(offset.ImmediateU32(), count.ImmediateU32()).has_value();
+    };
+    const bool whole = std::ranges::all_of(readers, extractsField);
+    if (!whole) {
+        std::vector<IrUse> extracts;
+        const auto collectExtracts = [&](const auto& self, IrValue& value) -> void {
+            for (const IrUse& use : value.OperandUses()) {
+                if (use.user->Opcode() == IrOpcode::Identity) {
+                    self(self, *use.user);
+                } else if (extractsField(use)) {
+                    extracts.push_back(use);
+                }
+            }
+        };
+        collectExtracts(collectExtracts, ancillary);
+        direct = std::move(extracts);
+        forwarded.clear();
+    }
     std::array<IrValue*, 2> fields {};
     const auto field = [&](std::size_t index) -> IrValue& {
         if (fields[index] == nullptr) {
@@ -213,30 +300,29 @@ bool lowerPackedAncillary(IrProgram& program, IrBuilder& builder, IrValue& ancil
         }
         return *fields[index];
     };
-    constexpr std::array<std::pair<std::uint32_t, std::uint32_t>, 2> ranges {{{8u, 4u}, {16u, 13u}}};
-    bool lowered = false;
-    for (const IrUse& use : uses) {
-        IrValue& user = *use.user;
-        if ((user.Opcode() != IrOpcode::BitFieldUExtract && user.Opcode() != IrOpcode::BitFieldSExtract) || use.operand != 0u) {
-            continue;
+    const auto emit = [&](IrOpcode opcode, IrValue& lhs, IrValue& rhs) -> IrValue& {
+        IrValue& created = program.CreateValue(opcode, IrType::U32);
+        created.AddArgument(&lhs);
+        created.AddArgument(&rhs);
+        ancillary.Parent()->InsertInstructionBefore(&ancillary, &created);
+        return created;
+    };
+    if (!forwarded.empty()) {
+        IrValue& sample = emit(IrOpcode::ShiftLeftLogical32, field(0u), builder.Constant(8u));
+        IrValue& layer = emit(IrOpcode::ShiftLeftLogical32, field(1u), builder.Constant(16u));
+        IrValue& packed = emit(IrOpcode::BitwiseOr32, sample, layer);
+        for (const IrUse& use : forwarded) {
+            use.user->ReplaceArgument(use.operand, &packed);
         }
+    }
+    for (const IrUse& use : direct) {
+        IrValue& user = *use.user;
         auto& offset = resolveArg(user, 1);
         auto& count = resolveArg(user, 2);
-        if (!isImmediate(offset, IrType::U32) || !isImmediate(count, IrType::U32) || count.ImmediateU32() == 0u) {
-            continue;
-        }
-        const auto range = std::ranges::find_if(ranges, [&](const auto& candidate) {
-            return offset.ImmediateU32() >= candidate.first && count.ImmediateU32() <= candidate.second &&
-                   offset.ImmediateU32() - candidate.first <= candidate.second - count.ImmediateU32();
-        });
-        if (range == ranges.end()) {
-            continue;
-        }
-        user.ReplaceArgument(0, &field(static_cast<std::size_t>(range - ranges.begin())));
-        user.ReplaceArgument(1, &builder.Constant(offset.ImmediateU32() - range->first));
-        lowered = true;
+        const auto index = *packedField(offset.ImmediateU32(), count.ImmediateU32());
+        user.ReplaceArgument(0, &field(index));
+        user.ReplaceArgument(1, &builder.Constant(offset.ImmediateU32() - packedFields[index].first));
     }
-    return lowered;
 }
 
 } // namespace
@@ -245,7 +331,6 @@ bool ConstantFolder::tryFoldValue(IrProgram& program, IrValue& value) const {
     IrBuilder builder(program);
     switch (value.Opcode()) {
         case IrOpcode::Phi: return foldPhi(value);
-        case IrOpcode::GetBuiltin: return lowerPackedAncillary(program, builder, value);
         case IrOpcode::SelectU1:
         case IrOpcode::SelectF32:
         case IrOpcode::SelectU32: return foldSelect(value);
@@ -554,7 +639,7 @@ bool ConstantFolder::tryFoldValue(IrProgram& program, IrValue& value) const {
             return foldU32(builder, value, [](std::uint32_t a, std::uint32_t b) { return std::max(a, b); });
         }
         case IrOpcode::IEqual32: return foldU32Compare(builder, value, [](std::uint32_t a, std::uint32_t b) { return a == b; });
-        case IrOpcode::INotEqual32: return foldU32Compare(builder, value, [](std::uint32_t a, std::uint32_t b) { return a != b; });
+        case IrOpcode::INotEqual32: return foldConstantBitTest(builder, value) || foldU32Compare(builder, value, [](std::uint32_t a, std::uint32_t b) { return a != b; });
         case IrOpcode::ULessThan32: return foldU32Compare(builder, value, [](std::uint32_t a, std::uint32_t b) { return a < b; });
         case IrOpcode::ULessThanEqual32: return foldU32Compare(builder, value, [](std::uint32_t a, std::uint32_t b) { return a <= b; });
         case IrOpcode::UGreaterThan32: return foldU32Compare(builder, value, [](std::uint32_t a, std::uint32_t b) { return a > b; });
@@ -651,6 +736,18 @@ void ConstantFolder::Fold(IrProgram& program, std::span<IrBlock* const> blocks) 
         for (IrValue* inst : block->Instructions()) {
             const auto success = tryFoldValue(program, *inst);
         }
+    }
+    std::vector<IrValue*> words;
+    for (IrBlock* block : blocks) {
+        for (IrValue* inst : block->Instructions()) {
+            if (inst->Opcode() == IrOpcode::GetBuiltin) {
+                words.push_back(inst);
+            }
+        }
+    }
+    IrBuilder builder(program);
+    for (IrValue* word : words) {
+        lowerPackedAncillary(program, builder, *word);
     }
 }
 

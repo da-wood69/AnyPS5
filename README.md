@@ -2,7 +2,7 @@
 
 Tool for automatically porting executables to Linux and Windows, with an experimental macOS x86-64 runtime.
 
-Includes a [relinker](core/relinker) and implementations of [system prx libraries](core/libs/prx) suitable for dynamic linking. Linux and Windows outputs run as native programs. macOS executes relinked x86-64 guest code in-process through `anyps5-runner`; graphics use Vulkan over MoltenVK. Apple Silicon currently requires Rosetta 2.
+Includes a [relinker](core/relinker) and implementations of [system prx libraries](core/libs/prx) suitable for dynamic linking. Linux and Windows outputs run as native programs. macOS supports native Mach-O output and the tested in-process `anyps5-runner` path; graphics use Vulkan over MoltenVK. Apple Silicon currently requires Rosetta 2.
 
 [Usage](docs/user/USAGE.md), [Build instructions](docs/dev/BUILD.md), [Architecture](docs/dev/ARCHITECTURE.md), [Technical debt of the project](docs/dev/TechnicalDebt.md), [code style conventions](docs/dev/CONVENTIONS.md), [contributing](CONTRIBUTING.md)
 

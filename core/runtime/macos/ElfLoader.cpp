@@ -682,11 +682,18 @@ int ElfImage::Run(int argc, char** argv) {
     auto entry = slide + header.entry;
     if (entry < mappedBegin || entry >= mappedEnd) throw std::runtime_error("Guest entry is outside the image: " + path.string());
     const auto* stub = reinterpret_cast<const std::uint8_t*>(entry);
-    static constexpr std::uint8_t prefix[] = {0x48, 0x89, 0xe7, 0x48, 0x83, 0xe4, 0xf0, 0x48, 0x31, 0xf6, 0xe8};
-    if (mappedEnd - entry >= sizeof(prefix) + 4 && std::memcmp(stub, prefix, sizeof(prefix)) == 0) {
+    static constexpr std::uint8_t prefix[] = {0x48, 0x89, 0xe7, 0x48, 0x83, 0xe4, 0xf0};
+    static constexpr std::uint8_t frame[] = {0x6a, 0x00, 0x6a, 0x00, 0x48, 0x89, 0xe5};
+    static constexpr std::uint8_t call[] = {0x48, 0x31, 0xf6, 0xe8};
+    std::size_t callOffset = sizeof(prefix);
+    if (mappedEnd - entry >= callOffset + sizeof(frame) && std::memcmp(stub, prefix, sizeof(prefix)) == 0 &&
+        std::memcmp(stub + callOffset, frame, sizeof(frame)) == 0)
+        callOffset += sizeof(frame);
+    if (mappedEnd - entry >= callOffset + sizeof(call) + 4 && std::memcmp(stub, prefix, sizeof(prefix)) == 0 &&
+        std::memcmp(stub + callOffset, call, sizeof(call)) == 0) {
         std::int32_t displacement;
-        std::memcpy(&displacement, stub + sizeof(prefix), sizeof(displacement));
-        entry += sizeof(prefix) + sizeof(displacement) + displacement;
+        std::memcpy(&displacement, stub + callOffset + sizeof(call), sizeof(displacement));
+        entry += callOffset + sizeof(call) + sizeof(displacement) + displacement;
     }
     std::vector<std::uintptr_t> stack;
     stack.reserve(static_cast<std::size_t>(argc) + 5);

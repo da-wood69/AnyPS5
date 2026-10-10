@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cstdio>
+#include <cstdint>
 #include <iterator>
 #include <cstdlib>
 #include <stdexcept>
@@ -11,7 +12,6 @@
 #include <random>
 #include <string>
 #include <cinttypes>
-#include <cerrno>
 
 #include "prx/libc/include/General.hpp"
 #include "prx/libc/include/specifics/gcc/AtomicOps.hpp"
@@ -95,21 +95,13 @@ unsigned int APS5_VABI _Atomic_load_4_nid_postfix(volatile unsigned int* target,
 }
 
 std::intmax_t APS5_VABI strtoimax_nid_postfix(const char* str, char** endptr, int base) {
-    const int saved = errno;
-    char* end = nullptr;
-    const auto result = std::strtoimax(str, &end, base);
-    if (end == str && errno == EINVAL) errno = saved;
-    if (endptr) *endptr = end;
-    return result;
+    if (StopAtBinaryPrefix_nid_no_patch(str, endptr, base)) return 0;
+    return std::strtoimax(str, endptr, base);
 }
 
 std::uintmax_t APS5_VABI strtoumax_nid_postfix(const char* str, char** endptr, int base) {
-    const int saved = errno;
-    char* end = nullptr;
-    const auto result = std::strtoumax(str, &end, base);
-    if (end == str && errno == EINVAL) errno = saved;
-    if (endptr) *endptr = end;
-    return result;
+    if (StopAtBinaryPrefix_nid_no_patch(str, endptr, base)) return 0;
+    return std::strtoumax(str, endptr, base);
 }
 
 unsigned int APS5_VABI _ZSt14_Random_devicev_nid_postfix() {
@@ -141,8 +133,9 @@ void APS5_VABI _Unlockfilelock_nid_postfix(FileStream* stream) {
 #endif
 }
 
-unsigned long APS5_VABI _Stoul_nid_postfix(const char* str, char** endptr, int base) {
-    return std::strtoul(str, endptr, base);
+std::uint64_t APS5_VABI _Stoul_nid_postfix(const char* str, char** endptr, int base) {
+    if (StopAtBinaryPrefix_nid_no_patch(str, endptr, base)) return 0;
+    return std::strtoull(str, endptr, base);
 }
 
 void APS5_VABI _Locksyslock_nid_postfix() {

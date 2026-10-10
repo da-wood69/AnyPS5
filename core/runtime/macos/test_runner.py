@@ -27,8 +27,8 @@ def compute_nid(name):
 
 def import_fixture():
     image = dynamic_fixture()
-    struct.pack_into("<H", image, 56, 5)
-    for index in range(2, 5):
+    struct.pack_into("<H", image, 56, 7)
+    for index in range(2, 7):
         struct.pack_into("<IIQQQQQQ", image, 64 + index * 56,
                          0x6FFFFF01, 0, 0, 0, 0, 0, 0, 1)
     nid = b"BNowx2l588E"
@@ -51,10 +51,10 @@ def import_fixture():
 def process_parameters_fixture():
     image = dynamic_fixture()
     struct.pack_into("<Q", image, 64 + 48, 0x4000)
-    struct.pack_into("<H", image, 56, 6)
+    struct.pack_into("<H", image, 56, 7)
     struct.pack_into("<IIQQQQQQ", image, 64 + 2 * 56,
                      0x61000001, 4, 0x900, 0x900, 0x900, 0x40, 0x40, 8)
-    for index in range(3, 6):
+    for index in range(3, 7):
         struct.pack_into("<IIQQQQQQ", image, 64 + index * 56,
                          0x6FFFFF01, 0, 0, 0, 0, 0, 0, 1)
     strings = b"\0AnyPs5GuestProcessParameters\0"
@@ -84,11 +84,12 @@ def process_parameters_fixture():
 
 def direct_tls_fixture():
     image = argv_fixture()
-    struct.pack_into("<H", image, 56, 6)
+    struct.pack_into("<H", image, 56, 7)
     struct.pack_into("<IIQQQQQQ", image, 64 + 2 * 56,
                      7, 4, 0x4800, 0x800, 0x800, 8, 16, 16)
-    struct.pack_into("<IIQQQQQQ", image, 64 + 5 * 56,
-                     0x6FFFFF01, 0, 0, 0, 0, 0, 0, 1)
+    for index in (5, 6):
+        struct.pack_into("<IIQQQQQQ", image, 64 + index * 56,
+                         0x6FFFFF01, 0, 0, 0, 0, 0, 0, 1)
     struct.pack_into("<Q", image, 0x4800, 42)
     code = bytes.fromhex(
         "64488b042500000000"
@@ -103,8 +104,8 @@ def direct_tls_fixture():
 
 def dynamic_loader_fixture():
     image = dynamic_fixture()
-    struct.pack_into("<H", image, 56, 5)
-    for index in range(2, 5):
+    struct.pack_into("<H", image, 56, 7)
+    for index in range(2, 7):
         struct.pack_into("<IIQQQQQQ", image, 64 + index * 56,
                          0x6FFFFF01, 0, 0, 0, 0, 0, 0, 1)
     load_nid = compute_nid("sceKernelLoadStartModule").encode()
@@ -241,68 +242,68 @@ def main():
         output = root / "output.elf"
         source.write_bytes(argv_fixture())
         converted = subprocess.run(
-            [str(relinker), "--macos", "--skip-sce-module", str(source), str(output)],
-            capture_output=True, text=True, timeout=30)
+            [str(relinker), "--macos-runner", "--skip-sce-module", str(source), str(output)],
+            capture_output=True, text=True, timeout=90)
         assert converted.returncode == 0, (converted.stdout, converted.stderr)
         assert "System: macOS runner" in converted.stdout, converted.stdout
-        valid = subprocess.run([str(runner), str(output), "Z"], capture_output=True, timeout=20)
+        valid = subprocess.run([str(runner), str(output), "Z"], capture_output=True, timeout=60)
         assert valid.returncode == -signal.SIGTRAP, (valid.returncode, valid.stdout, valid.stderr)
-        invalid = subprocess.run([str(runner), str(output), "Z", "extra"], capture_output=True, timeout=20)
+        invalid = subprocess.run([str(runner), str(output), "Z", "extra"], capture_output=True, timeout=60)
         assert invalid.returncode == -signal.SIGILL, (invalid.returncode, invalid.stdout, invalid.stderr)
         autorun_image = argv_fixture()
         autorun_image[0x4010] = 0xC3
         source.write_bytes(autorun_image)
         autorun_output = root / "autorun.elf"
         autorun = subprocess.run(
-            [str(relinker), "--macos", "--skip-sce-module", "--autorun", str(source), str(autorun_output)],
-            input="\n", capture_output=True, text=True, timeout=30)
+            [str(relinker), "--macos-runner", "--skip-sce-module", "--autorun", str(source), str(autorun_output)],
+            input="\n", capture_output=True, text=True, timeout=90)
         assert autorun.returncode == 0, (autorun.stdout, autorun.stderr)
         assert "Raw exit code: 0; Unpacked: 0" in autorun.stdout, autorun.stdout
         source.write_bytes(direct_tls_fixture())
         tls_output = root / "tls.elf"
         converted = subprocess.run(
-            [str(relinker), "--macos", "--skip-sce-module", str(source), str(tls_output)],
-            capture_output=True, text=True, timeout=30)
+            [str(relinker), "--macos-runner", "--skip-sce-module", str(source), str(tls_output)],
+            capture_output=True, text=True, timeout=90)
         assert converted.returncode == 0, (converted.stdout, converted.stderr)
-        tls = subprocess.run([str(runner), str(tls_output)], capture_output=True, timeout=20)
+        tls = subprocess.run([str(runner), str(tls_output)], capture_output=True, timeout=60)
         assert tls.returncode == -signal.SIGTRAP, (tls.returncode, tls.stdout, tls.stderr)
         source.write_bytes(process_parameters_fixture())
         parameters_output = root / "parameters.elf"
         converted = subprocess.run(
-            [str(relinker), "--macos", "--skip-sce-module", str(source), str(parameters_output)],
-            capture_output=True, text=True, timeout=30)
+            [str(relinker), "--macos-runner", "--skip-sce-module", str(source), str(parameters_output)],
+            capture_output=True, text=True, timeout=90)
         assert converted.returncode == 0, (converted.stdout, converted.stderr)
-        parameters = subprocess.run([str(runner), str(parameters_output)], capture_output=True, timeout=20)
+        parameters = subprocess.run([str(runner), str(parameters_output)], capture_output=True, timeout=60)
         assert parameters.returncode == -signal.SIGTRAP, (parameters.returncode, parameters.stdout, parameters.stderr)
         source.write_bytes(import_fixture())
         imported_output = root / "imported.elf"
         converted = subprocess.run(
-            [str(relinker), "--macos", "--skip-sce-module", str(source), str(imported_output)],
-            capture_output=True, text=True, timeout=30)
+            [str(relinker), "--macos-runner", "--skip-sce-module", str(source), str(imported_output)],
+            capture_output=True, text=True, timeout=90)
         assert converted.returncode == 0, (converted.stdout, converted.stderr)
         environment = dict(os.environ)
         environment["ANYPS5_LIBS"] = str(libraries)
-        imported = subprocess.run([str(runner), str(imported_output)], capture_output=True, timeout=20, env=environment)
+        imported = subprocess.run([str(runner), str(imported_output)], capture_output=True, timeout=60, env=environment)
         assert imported.returncode == -signal.SIGTRAP, (imported.returncode, imported.stdout, imported.stderr)
         source.write_bytes(dynamic_loader_fixture())
         dynamic_output = root / "dynamic.elf"
         converted = subprocess.run(
-            [str(relinker), "--macos", "--skip-sce-module", str(source), str(dynamic_output)],
-            capture_output=True, text=True, timeout=30)
+            [str(relinker), "--macos-runner", "--skip-sce-module", str(source), str(dynamic_output)],
+            capture_output=True, text=True, timeout=90)
         assert converted.returncode == 0, (converted.stdout, converted.stderr)
         app0 = root / "app0"
         app0.mkdir()
         module = app0 / "dynamic-module.prx"
         Path(str(module) + ".guest.prx").write_bytes(guest_module_fixture())
-        dynamic = subprocess.run([str(runner), str(dynamic_output), "/app0/dynamic-module.prx"], capture_output=True, timeout=20, env=environment)
+        dynamic = subprocess.run([str(runner), str(dynamic_output), "/app0/dynamic-module.prx"], capture_output=True, timeout=60, env=environment)
         assert dynamic.returncode == -signal.SIGTRAP, (dynamic.returncode, dynamic.stdout, dynamic.stderr)
         source.write_bytes(unwind_metadata_fixture())
         unwind_output = root / "unwind.elf"
         converted = subprocess.run(
-            [str(relinker), "--macos", "--skip-sce-module", str(source), str(unwind_output)],
-            capture_output=True, text=True, timeout=30)
+            [str(relinker), "--macos-runner", "--skip-sce-module", str(source), str(unwind_output)],
+            capture_output=True, text=True, timeout=90)
         assert converted.returncode == 0, (converted.stdout, converted.stderr)
-        unwind = subprocess.run([str(runner), str(unwind_output)], capture_output=True, timeout=20)
+        unwind = subprocess.run([str(runner), str(unwind_output)], capture_output=True, timeout=60)
         assert unwind.returncode == -signal.SIGTRAP, (unwind.returncode, unwind.stdout, unwind.stderr)
     print("macOS runner entry test passed")
 

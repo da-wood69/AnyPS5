@@ -53,7 +53,7 @@ void defaults() {
     require(args.inputPath == "input.elf", "input path was not captured");
     require(args.outputPath == "output.elf", "output path was not captured");
     require(!args.skipSyscallCheck && !args.skipSceModule && !args.toIntel && !args.writeRegistry &&
-        !args.toWindows && !args.lazyBinding && !args.autorun && !args.windowsDiagnostics && !args.windowsGui,
+        !args.toWindows && !args.toMacos && !args.toMacosRunner && !args.lazyBinding && !args.autorun && !args.windowsDiagnostics && !args.windowsGui,
         "a flag defaulted to true");
     require(args.unusedFilterLevel == 0u, "unused filter level did not default to 0");
     require(args.runPath == "$ORIGIN/libs", "run path did not keep its default");
@@ -176,6 +176,16 @@ void windowsGuiRequiresWindows() {
     require(ok.windowsGui && ok.toWindows, "--windows-gui with --windows was rejected");
 }
 
+void macosModes() {
+    const auto native = parse({"--macos", "input.elf", "output"});
+    require(native.toMacos && !native.toMacosRunner, "--macos did not select native Mach-O output");
+    const auto runner = parse({"--macos-runner", "input.elf", "output.elf"});
+    require(runner.toMacosRunner && !runner.toMacos, "--macos-runner did not select runner output");
+    const std::string message = "--macos-runner conflicts with --windows and --macos";
+    expectThrows({"--macos-runner", "--windows", "input.elf", "output.elf"}, message);
+    expectThrows({"--macos", "--macos-runner", "input.elf", "output.elf"}, message);
+}
+
 void missingPositionals() {
     expectUsage({});
     expectUsage({"input.elf"});
@@ -206,6 +216,7 @@ int main() {
         tooManyPositionals();
         windowsDiagnosticsRequiresWindows();
         windowsGuiRequiresWindows();
+        macosModes();
         missingPositionals();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

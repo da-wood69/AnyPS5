@@ -1,8 +1,10 @@
 #include "prx/libkernel/Time/include/Time.hpp"
 #include "prx/libkernel/Time/include/TimedWait.hpp"
+#include "prx/libkernel/Pthread/include/Cancel.hpp"
 
 #include "prx/libc/include/General.hpp"
 #include "prx/libkernel/KernelErrors.hpp"
+#include "prx/libkernel/Pthread/include/Pthread.hpp"
 #include <algorithm>
 #include <cerrno>
 #include <cstdint>
@@ -25,9 +27,41 @@
 #include <sys/time.h>
 #include <sys/times.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <pthread.h>
+#endif
 #endif
 
 extern "C" int* APS5_VABI __error_nid_postfix();
+
+static constexpr int GUEST_EINVAL = 22;
+static constexpr int GUEST_CLOCK_THREAD_CPUTIME_ID = 14;
+
+#ifdef __APPLE__
+static std::uint64_t DarwinThreadCpuNanos(const pthread_t thread) {
+    thread_basic_info_data_t info{};
+    mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
+    const auto result = thread_info(pthread_mach_thread_np(thread), THREAD_BASIC_INFO,
+                                    reinterpret_cast<thread_info_t>(&info), &count);
+    if (result != KERN_SUCCESS)
+        throw std::runtime_error("Querying thread CPU time failed");
+    const auto toNanos = [](const time_value_t& time) {
+        return static_cast<std::uint64_t>(time.seconds) * 1000000000ULL +
+               static_cast<std::uint64_t>(time.microseconds) * 1000ULL;
+    };
+    return toNanos(info.user_time) + toNanos(info.system_time);
+}
+#endif
+
+static bool IsCpuClock(int clockId) {
+    const auto bits = static_cast<std::uint32_t>(clockId);
+    if ((bits & CPU_CLOCK_BIT) == 0)
+        return false;
+    if ((bits & CPU_CLOCK_PROCESS_BIT) != 0)
+        throw std::runtime_error("clock: unsupported process CPU clock_id " + std::to_string(clockId));
+    return true;
+}
 
 static std::uint64_t RawMonotonicNanos() {
 #ifdef _WIN32
@@ -147,11 +181,13 @@ static const bool g_timerSelfTest = [] {
 extern "C" {
 
 std::uint64_t APS5_VABI sceKernelGetProcessTime() {
-    return (GetMonotonicNanos() - GetStartNanos()) / 1000ULL;
+    const std::uint64_t start = GetStartNanos();
+    return (GetMonotonicNanos() - start) / 1000ULL;
 }
 
 std::uint64_t APS5_VABI sceKernelGetProcessTimeCounter() {
-    return GetMonotonicNanos() - GetStartNanos();
+    const std::uint64_t start = GetStartNanos();
+    return GetMonotonicNanos() - start;
 }
 
 std::uint64_t APS5_VABI sceKernelGetProcessTimeCounterFrequency() {
@@ -221,9 +257,15 @@ void KernelTraceWait_nid_postfix(const char* kind, const void* caller, std::uint
     for (auto& [name, s] : sites) s = Site{};
 }
 
+static void CancellableSleep(std::uint64_t nanos) {
+    ThreadCancel::Check();
+    TimedWait::SleepNanos(nanos);
+    ThreadCancel::Check();
+}
+
 int APS5_VABI sceKernelUsleep_nid_postfix(KernelUseconds microseconds) {
     TraceSleep(__builtin_return_address(0), microseconds);
-    TimedWait::SleepNanos(static_cast<std::uint64_t>(microseconds) * 1000ULL);
+    CancellableSleep(static_cast<std::uint64_t>(microseconds) * 1000ULL);
     return 0;
 }
 
@@ -234,8 +276,8 @@ static int SleepForRequest(const KernelTimespec* rqtp, KernelTimespec* rmtp) {
     if (rqtp->tv_nsec < 0 || rqtp->tv_nsec >= 1000000000LL) return guestInvalid;
     const int savedError = errno;
     if (rqtp->tv_sec >= 0) {
-        TimedWait::SleepNanos(static_cast<std::uint64_t>(rqtp->tv_sec) * 1000000000ULL +
-                              static_cast<std::uint64_t>(rqtp->tv_nsec));
+        CancellableSleep(static_cast<std::uint64_t>(rqtp->tv_sec) * 1000000000ULL +
+                         static_cast<std::uint64_t>(rqtp->tv_nsec));
     }
     if (rmtp != nullptr) {
         rmtp->tv_sec = 0;
@@ -262,7 +304,7 @@ int APS5_VABI _nanosleep_nid_postfix(const KernelTimespec* rqtp, KernelTimespec*
 }
 
 int APS5_VABI usleep_nid_postfix(KernelUseconds microseconds) {
-    TimedWait::SleepNanos(static_cast<std::uint64_t>(microseconds) * 1000ULL);
+    CancellableSleep(static_cast<std::uint64_t>(microseconds) * 1000ULL);
     return 0;
 }
 
@@ -331,6 +373,16 @@ int APS5_VABI clock_gettime_nid_postfix(int clockId, KernelTimespec* tp) {
     if (tp == nullptr) {
         APS5_INVALID_ARG_EX;
     }
+    if (IsCpuClock(clockId)) {
+        std::uint64_t nanos = 0;
+        if (!GuestThreadCpuNanos(static_cast<int>(static_cast<std::uint32_t>(clockId) & CPU_CLOCK_ID_MASK), &nanos)) {
+            *__error_nid_postfix() = GUEST_EINVAL;
+            return -1;
+        }
+        tp->tv_sec = static_cast<std::int64_t>(nanos / 1000000000ULL);
+        tp->tv_nsec = static_cast<std::int64_t>(nanos % 1000000000ULL);
+        return 0;
+    }
     if (clockId == 1 || clockId == 2) {
         const std::uint64_t nanos = ProcessCpuNanos(clockId == 2);
         tp->tv_sec = static_cast<std::int64_t>(nanos / 1000000000ULL);
@@ -372,6 +424,14 @@ int APS5_VABI clock_gettime_nid_postfix(int clockId, KernelTimespec* tp) {
     }
     throw std::runtime_error(std::string(__func__) + ": unsupported clock_id " + std::to_string(clockId));
 #else
+#ifdef __APPLE__
+    if (clockId == GUEST_CLOCK_THREAD_CPUTIME_ID) {
+        const std::uint64_t nanos = DarwinThreadCpuNanos(pthread_self());
+        tp->tv_sec = static_cast<std::int64_t>(nanos / 1000000000ULL);
+        tp->tv_nsec = static_cast<std::int64_t>(nanos % 1000000000ULL);
+        return 0;
+    }
+#endif
     clockid_t nativeId;
     switch (clockId) {
         case 0:
@@ -416,9 +476,8 @@ int APS5_VABI clock_gettime_nid_postfix(int clockId, KernelTimespec* tp) {
 }
 
 int APS5_VABI gettimeofday_nid_postfix(KernelTimeval* tv, KernelTimezone* tz) {
-    if (tv == nullptr) {
-        APS5_INVALID_ARG_EX;
-    }
+    KernelTimeval ignoredTime{};
+    if (tv == nullptr) tv = &ignoredTime;
 #ifdef _WIN32
     FILETIME ft{};
     GetSystemTimePreciseAsFileTime(&ft);
@@ -442,9 +501,10 @@ int APS5_VABI gettimeofday_nid_postfix(KernelTimeval* tv, KernelTimezone* tz) {
 }
 
 int APS5_VABI clock_getres_nid_postfix(int clockId, KernelTimespec* res) {
-    if (res == nullptr) {
-        APS5_INVALID_ARG_EX;
-    }
+    KernelTimespec ignoredResolution{};
+    if (res == nullptr) res = &ignoredResolution;
+    if (IsCpuClock(clockId))
+        return clock_getres_nid_postfix(GUEST_CLOCK_THREAD_CPUTIME_ID, res);
     if (clockId == 1 || clockId == 2) {
         const std::uint64_t nanos = ProcessCpuResolutionNanos();
         res->tv_sec = static_cast<std::int64_t>(nanos / 1000000000ULL);
@@ -481,6 +541,13 @@ int APS5_VABI clock_getres_nid_postfix(int clockId, KernelTimespec* res) {
     }
     throw std::runtime_error(std::string(__func__) + ": unsupported clock_id " + std::to_string(clockId));
 #else
+#ifdef __APPLE__
+    if (clockId == GUEST_CLOCK_THREAD_CPUTIME_ID) {
+        res->tv_sec = 0;
+        res->tv_nsec = 1000;
+        return 0;
+    }
+#endif
     clockid_t nativeId;
     switch (clockId) {
         case 0:
@@ -541,10 +608,10 @@ int APS5_VABI sceKernelClockGettime(KernelClockid clock_id, KernelTimespec* tp) 
     return clock_gettime_nid_postfix(static_cast<int>(clock_id), tp);
 }
 
-int APS5_VABI sceKernelConvertLocaltimeToUtc(int64_t local_time, int64_t reserved, int64_t* utc_time, KernelTimezone* timezone, int32_t* dst_seconds) {
+int APS5_VABI sceKernelConvertLocaltimeToUtc(int64_t local_time, int64_t reserved, int64_t* utc_time, KernelTimesec* timezone, int32_t* dst_seconds) {
     (void)reserved;
     if (utc_time != nullptr) *utc_time = local_time;
-    if (timezone != nullptr) *timezone = {0, 0};
+    if (timezone != nullptr) *timezone = {local_time, 0u, 0u};
     if (dst_seconds != nullptr) *dst_seconds = 0;
     return 0;
 }
@@ -586,7 +653,7 @@ uint64_t APS5_VABI sceKernelGetTscFrequency(void) {
 }
 
 unsigned int APS5_VABI sceKernelSleep(unsigned int seconds) {
-    TimedWait::SleepNanos(static_cast<std::uint64_t>(seconds) * 1000000000ULL);
+    CancellableSleep(static_cast<std::uint64_t>(seconds) * 1000000000ULL);
     return 0;
 }
 
